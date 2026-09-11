@@ -33,15 +33,10 @@ async function run() {
     auth: { autoRefreshToken: false, persistSession: false }
   })
 
-  const defaultUserPassword = process.env.ADMIN_DEFAULT_PASSWORD || 'Password123!'
+  const defaultUserPassword = process.env.ADMIN_DEFAULT_PASSWORD || '123456'
   const usersToCreate = [
     {
-      email: 'hoangcuong252003@gmail.com',
-      password: defaultUserPassword,
-      name: 'Hoàng Cường'
-    },
-    {
-      email: 'admin@company.local',
+      email: 'admin1@gmail.com',
       password: defaultUserPassword,
       name: 'Quản trị viên'
     }

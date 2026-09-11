@@ -1,0 +1,270 @@
+import { normalizeString } from './helpers.js'
+
+const COMMON_MIDDLE_NAMES = new Set(['thi', 'van'])
+const MIN_NAME_SCORE_FOR_EXACT_CODE_MATCH = 0.9
+
+export const normalizeEmployeeIdentity = (value) =>
+  normalizeString(value)
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+export const compactEmployeeIdentity = (value) =>
+  normalizeEmployeeIdentity(value).replace(/\s+/g, '')
+
+const compactWithoutCommonMiddleNames = (value) => {
+  const tokens = normalizeEmployeeIdentity(value).split(' ').filter(Boolean)
+  if (tokens.length <= 2) return tokens.join('')
+
+  return tokens
+    .filter((token, index) =>
+      index === 0 ||
+      index === tokens.length - 1 ||
+      !COMMON_MIDDLE_NAMES.has(token)
+    )
+    .join('')
+}
+
+const levenshteinDistance = (left, right) => {
+  if (left === right) return 0
+  if (!left) return right.length
+  if (!right) return left.length
+
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index)
+
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex++) {
+    const current = [leftIndex]
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex++) {
+      current[rightIndex] = Math.min(
+        current[rightIndex - 1] + 1,
+        previous[rightIndex] + 1,
+        previous[rightIndex - 1] +
+          (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1)
+      )
+    }
+    previous = current
+  }
+
+  return previous[right.length]
+}
+
+const similarity = (left, right) => {
+  if (!left || !right) return 0
+  return 1 - levenshteinDistance(left, right) / Math.max(left.length, right.length)
+}
+
+const employeeName = (employee) =>
+  employee?.ho_va_ten || employee?.name || employee?.fullName || ''
+
+const givenName = (value) => {
+  const tokens = normalizeEmployeeIdentity(value).split(' ').filter(Boolean)
+  return tokens[tokens.length - 1] || ''
+}
+
+export const getCanonicalEmployeeCode = (employee) =>
+  employee?.employeeId ||
+  employee?.employee_id ||
+  employee?.username ||
+  employee?.code ||
+  ''
+
+const employeeCodes = (employee) =>
+  [
+    employee?.employeeId,
+    employee?.employee_id,
+    employee?.username,
+    employee?.code
+  ]
+    .map(compactEmployeeIdentity)
+    .filter(Boolean)
+
+export const buildSourceEmployeeKey = (code, name) => {
+  const normalizedName = compactEmployeeIdentity(name)
+  const normalizedCode = compactEmployeeIdentity(code)
+  return `${normalizedCode || 'no-code'}::${normalizedName || 'no-name'}`
+}
+
+const scoreCandidate = (sourceCode, sourceName, employee) => {
+  const sourceNameCompact = compactEmployeeIdentity(sourceName)
+  const candidateNameCompact = compactEmployeeIdentity(employeeName(employee))
+  const sourceWithoutMiddle = compactWithoutCommonMiddleNames(sourceName)
+  const candidateWithoutMiddle = compactWithoutCommonMiddleNames(employeeName(employee))
+  const sourceCodeCompact = compactEmployeeIdentity(sourceCode)
+  const candidateCodes = employeeCodes(employee)
+  const sourceGivenName = givenName(sourceName)
+  const candidateGivenName = givenName(employeeName(employee))
+  const givenNameCompatible =
+    Boolean(sourceGivenName) &&
+    Boolean(candidateGivenName) &&
+    similarity(sourceGivenName, candidateGivenName) >= 0.85
+
+  const exactName =
+    Boolean(sourceNameCompact) &&
+    Boolean(candidateNameCompact) &&
+    sourceNameCompact === candidateNameCompact
+  const exactCode =
+    Boolean(sourceCodeCompact) &&
+    candidateCodes.includes(sourceCodeCompact)
+  const fullNameScore = similarity(sourceNameCompact, candidateNameCompact)
+  const withoutMiddleScore = similarity(sourceWithoutMiddle, candidateWithoutMiddle) * 0.96
+  let score = Math.max(fullNameScore, withoutMiddleScore)
+  let method = withoutMiddleScore > fullNameScore ? 'Bỏ qua tên đệm phổ biến' : 'Tên gần giống'
+
+  if (exactCode && exactName) {
+    score = 1
+    method = 'Mã và tên trùng hồ sơ Lumi'
+  } else if (exactCode && !sourceNameCompact) {
+    score = 1
+    method = 'Mã nhân viên trùng'
+  } else if (
+    exactCode &&
+    givenNameCompatible &&
+    score >= MIN_NAME_SCORE_FOR_EXACT_CODE_MATCH
+  ) {
+    score = Math.max(score, 0.99)
+    method = 'Mã trùng, tên tương thích'
+  } else if (exactCode) {
+    // A machine code can coincidentally equal a Lumi code belonging to another
+    // employee. Keep this conflict for manual review instead of linking it.
+    score = Math.max(score, 0.59)
+    method = 'Mã trùng nhưng tên không khớp'
+  } else if (exactName) {
+    score = 1
+    method = 'Tên trùng → gán mã nhân viên Lumi'
+  }
+
+  return {
+    employee,
+    employeeCode: getCanonicalEmployeeCode(employee),
+    score: Math.max(0, Math.min(1, score)),
+    method,
+    exactName,
+    exactCode,
+    hasSourceName: Boolean(sourceNameCompact),
+    givenNameCompatible
+  }
+}
+
+export const rankEmployeeMatches = (
+  sourceCode,
+  sourceName,
+  employees,
+  branch = ''
+) => {
+  const normalizedBranch = normalizeEmployeeIdentity(branch)
+  const branchEmployees = normalizedBranch
+    ? employees.filter(employee =>
+        normalizeEmployeeIdentity(employee.chi_nhanh || employee.branch || '') ===
+        normalizedBranch
+      )
+    : employees
+  const candidates = branchEmployees.length > 0 ? branchEmployees : employees
+
+  return candidates
+    .map(employee => scoreCandidate(sourceCode, sourceName, employee))
+    .sort((left, right) =>
+      right.score - left.score ||
+      Number(right.exactCode && right.exactName) -
+        Number(left.exactCode && left.exactName) ||
+      Number(right.exactName) - Number(left.exactName)
+    )
+}
+
+export const matchAttendanceEmployee = (
+  sourceCode,
+  sourceName,
+  employees,
+  branch = ''
+) => {
+  const ranked = rankEmployeeMatches(sourceCode, sourceName, employees, branch)
+  const best = ranked[0] || null
+  const second = ranked[1] || null
+  const confidence = best?.score || 0
+  const gap = best ? confidence - (second?.score || 0) : 0
+  const uniqueExactName = best?.exactName && !second?.exactName
+  const autoMatched =
+    Boolean(best) &&
+    (
+      uniqueExactName ||
+      (best.exactCode && (
+        best.exactName ||
+        !best.hasSourceName ||
+        (best.givenNameCompatible && confidence >= 0.9)
+      )) ||
+      (best.givenNameCompatible && confidence >= 0.9 && gap >= 0.08)
+    )
+
+  return {
+    employee: autoMatched ? best.employee : null,
+    suggestedEmployee: best?.employee || null,
+    confidence,
+    gap,
+    method: best?.method || 'Không tìm thấy',
+    status: autoMatched ? 'matched' : confidence >= 0.6 ? 'review' : 'unmatched',
+    candidates: ranked.slice(0, 5)
+  }
+}
+
+export const applyEmployeeToAttendanceLog = (log, employee) => {
+  const canonicalName = employeeName(employee)
+  const canonicalCode = getCanonicalEmployeeCode(employee)
+  const sourceName =
+    log.sourceEmployeeName ||
+    log.employeeName ||
+    log.machineName ||
+    log.tenTheoMayChamCong ||
+    ''
+  const sourceCode = log.sourceEmployeeCode || log.employeeCode || ''
+
+  return {
+    ...log,
+    sourceEmployeeName: sourceName,
+    sourceEmployeeCode: sourceCode,
+    employeeId: employee.id,
+    employeeCode: canonicalCode || sourceCode,
+    employeeName: canonicalName || sourceName,
+    machineName:
+      log.machineName ||
+      log.tenTheoMayChamCong ||
+      sourceName ||
+      canonicalName,
+    tenTheoMayChamCong:
+      log.tenTheoMayChamCong ||
+      log.machineName ||
+      sourceName ||
+      canonicalName,
+    department:
+      employee.bo_phan ||
+      employee.department ||
+      log.department ||
+      log.phongBan ||
+      '',
+    position:
+      employee.vi_tri ||
+      employee.position ||
+      log.position ||
+      log.chucVu ||
+      ''
+  }
+}
+
+export const buildAttendanceRecordKey = (log) => {
+  const sourceCode = log.sourceEmployeeCode || log.employeeCode || ''
+  const sourceName =
+    log.sourceEmployeeName ||
+    log.employeeName ||
+    log.machineName ||
+    log.tenTheoMayChamCong ||
+    ''
+  const employeeIdentity = sourceCode || sourceName
+    ? buildSourceEmployeeKey(sourceCode, sourceName)
+    : String(log.employeeId || '')
+  const date = String(log.date || '').slice(0, 10)
+  const checkIn = String(log.checkIn || log.vao || '')
+  const checkOut = String(log.checkOut || log.ra || '')
+  const shift = String(log.shiftName || log.tenCa || '')
+
+  return [employeeIdentity, date, checkIn, checkOut, shift]
+    .map(value => normalizeEmployeeIdentity(value))
+    .join('|')
+}

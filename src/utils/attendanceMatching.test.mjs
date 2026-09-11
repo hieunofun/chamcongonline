@@ -1,0 +1,81 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { matchAttendanceEmployee } from './attendanceMatching.js'
+
+test('does not auto-match a machine code collision when employee names differ', () => {
+  const wrongEmployee = {
+    id: 'wrong-profile',
+    employeeId: '00019',
+    ho_va_ten: 'Nguyễn Thị Hồng Thắm'
+  }
+
+  const match = matchAttendanceEmployee(
+    '00019',
+    'Nguyễn Thị Phương Anh',
+    [wrongEmployee]
+  )
+
+  assert.equal(match.employee, null)
+  assert.ok(match.confidence < 0.9)
+  assert.equal(match.method, 'Mã trùng nhưng tên không khớp')
+})
+
+test('prefers an exact name over a colliding machine code', () => {
+  const wrongEmployee = {
+    id: 'wrong-profile',
+    employeeId: '00019',
+    ho_va_ten: 'Nguyễn Thị Hồng Thắm'
+  }
+  const correctEmployee = {
+    id: 'correct-profile',
+    employeeId: 'LU099',
+    ho_va_ten: 'Nguyễn Thị Phương Anh'
+  }
+
+  const match = matchAttendanceEmployee(
+    '00019',
+    'Nguyễn Thị Phương Anh',
+    [wrongEmployee, correctEmployee]
+  )
+
+  assert.equal(match.employee?.id, 'correct-profile')
+  assert.equal(match.method, 'Tên trùng → gán mã nhân viên Lumi')
+})
+
+test('still auto-matches when both employee code and name agree', () => {
+  const employee = {
+    id: 'correct-profile',
+    employeeId: 'LU035',
+    ho_va_ten: 'Đặng Thùy Liên'
+  }
+
+  const match = matchAttendanceEmployee('LU035', 'Đặng Thùy Liên', [employee])
+
+  assert.equal(match.employee?.id, 'correct-profile')
+  assert.equal(match.status, 'matched')
+})
+
+test('does not auto-match different Vietnamese given names with a high overall similarity', () => {
+  const employee = {
+    id: 'wrong-profile',
+    employeeId: 'LU003',
+    ho_va_ten: 'Nguyễn Thị Gấm'
+  }
+
+  const match = matchAttendanceEmployee('00012', 'Nguyễn Thị Đảm', [employee])
+
+  assert.equal(match.employee, null)
+  assert.equal(match.status, 'review')
+})
+
+test('does not choose arbitrarily when multiple profiles have the same full name', () => {
+  const employees = [
+    { id: 'profile-1', employeeId: 'LU012', ho_va_ten: 'Nguyễn Thị Lan Anh' },
+    { id: 'profile-2', employeeId: 'LU018', ho_va_ten: 'Nguyễn Thị Lan Anh' }
+  ]
+
+  const match = matchAttendanceEmployee('00004', 'Nguyễn Thị Lan Anh', employees)
+
+  assert.equal(match.employee, null)
+  assert.equal(match.status, 'review')
+})

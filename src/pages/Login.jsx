@@ -10,6 +10,7 @@ function Login() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const { login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
@@ -20,7 +21,9 @@ function Login() {
     setError('')
     setLoading(true)
     try {
-      const profile = await login(email.trim(), password)
+      const cleanEmail = email.trim()
+      const cleanPassword = password.trim()
+      const profile = await login(cleanEmail, cleanPassword)
       if (profile?.role === 'user') {
         navigate('/bang-cong', { replace: true })
         return
@@ -33,7 +36,14 @@ function Login() {
       setError('Tài khoản chưa được cấp quyền sử dụng hệ thống.')
     } catch (loginError) {
       console.error('Login error:', loginError)
-      setError('Email hoặc mật khẩu không chính xác.')
+      const msg = loginError?.message || ''
+      if (msg.includes('Invalid login credentials')) {
+        setError('Email hoặc mật khẩu không chính xác. Hãy kiểm tra lại mật khẩu (chú ý tắt tự động điền mật khẩu cũ).')
+      } else if (msg) {
+        setError(msg)
+      } else {
+        setError('Email hoặc mật khẩu không chính xác.')
+      }
     } finally {
       setLoading(false)
     }
@@ -58,7 +68,36 @@ function Login() {
             </label>
             <label className="system-login__field">
               <span>Mật khẩu</span>
-              <div><i className="fas fa-lock"></i><input type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder="••••••••" autoComplete="current-password" required /></div>
+              <div style={{ position: 'relative' }}>
+                <i className="fas fa-lock"></i>
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={event => setPassword(event.target.value)}
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                  required
+                  style={{ paddingRight: '40px' }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  style={{
+                    position: 'absolute',
+                    right: '10px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: '#64748b',
+                    fontSize: '0.95rem'
+                  }}
+                  title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                >
+                  <i className={`fas ${showPassword ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                </button>
+              </div>
             </label>
             <button className="system-login__submit" type="submit" disabled={loading}>
               {loading ? <><i className="fas fa-spinner fa-spin"></i> Đang kết nối...</> : <>Đăng nhập <i className="fas fa-arrow-right"></i></>}

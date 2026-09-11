@@ -111,14 +111,14 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
   })
 
   if (!hasSourceWorkday) {
-    workdays = hours >= 7.5 ? 1 : hours >= 3 ? 0.5 : 0
+    workdays = Math.min(hours / 8, 1)
   }
 
   return {
     hours: Math.round(hours * 100) / 100,
-    workdays: Math.round((workdays + extraWorkdays) * 100) / 100,
-    regularWorkdays: Math.round(workdays * 100) / 100,
-    extraWorkdays: Math.round(extraWorkdays * 100) / 100,
+    workdays: workdays + extraWorkdays,
+    regularWorkdays: workdays,
+    extraWorkdays: extraWorkdays,
     overtimeHours: Math.round(overtimeHours * 100) / 100,
     paidLeaveWorkdays: Math.round(paidLeaveWorkdays * 100) / 100,
     lateMinutes,

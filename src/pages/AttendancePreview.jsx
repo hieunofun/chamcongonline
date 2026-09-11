@@ -230,7 +230,7 @@ function AttendancePreview() {
         name: r.employeeName || '',
         position: r.position || r.chuc_vu || r.displayDepartment || '',
         dailyMap,
-        totalCong: r.workdays ? Number(r.workdays).toFixed(1) : (calcTotal ? calcTotal.toFixed(1) : '0')
+        totalCong: r.workdays != null ? Number(r.workdays).toFixed(2) : (calcTotal ? calcTotal.toFixed(2) : '0.00')
       }
     })
   }, [rows, month, monthDaysHeader, excelSearch])
@@ -511,12 +511,14 @@ function AttendancePreview() {
       manualWorkdays: nextManuals || {},
       attendanceSettings: nextAttendanceSettings
     })
+    const validEmpIds = new Set(employeeList.map(e => String(e.id)))
+    const filteredSummaryRows = summaryRows.filter(row => validEmpIds.has(String(row.employeeId)))
     const snapshot = {
       month: targetMonth,
       generatedAt: new Date().toISOString(),
       sourceLogCount: monthLogs.length,
-      employeeCount: summaryRows.length,
-      rows: serializeAttendanceSummaryRows(summaryRows)
+      employeeCount: filteredSummaryRows.length,
+      rows: serializeAttendanceSummaryRows(filteredSummaryRows)
     }
     await fbSet(`hr/attendanceMonthSummaries/${targetMonth}`, snapshot)
     applySnapshot(snapshot, targetMonth)
@@ -632,8 +634,9 @@ function AttendancePreview() {
       end: Math.min(start + 6, calendar.length)
     }))
     const checks = [
-      ['Đi muộn', day => day?.late],
-      ['Không chấm công', day => day?.missingPunch],
+      // Yêu cầu 8: Tạm thời vô hiệu hóa các kết luận tự suy đoán (Đi muộn, Không chấm công)
+      // ['Đi muộn', day => day?.late],
+      // ['Không chấm công', day => day?.missingPunch],
       ['Nghỉ không phép', day => day?.unapprovedAbsence]
     ]
 
@@ -843,12 +846,12 @@ function AttendancePreview() {
                   <td rowSpan={departmentRowSpans[index]}>{row.displayDepartment}</td>
                 )}
                 <td>{row.shift}</td>
-                <td>{row.lateCount ? `${row.lateCount} lần (${row.lateMinutes}p)` : ''}</td>
+                <td>{row.notes || ''}</td>
                 <td>{row.overtimeHours || ''}</td>
                 <td>{row.paidLeaveWorkdays || ''}</td>
                 <td></td>
                 <td></td>
-                <td>{row.workdays || ''}</td>
+                <td>{row.workdays != null && row.workdays !== '' ? Number(row.workdays).toFixed(2) : ''}</td>
               </tr>
             ))}
           </tbody>

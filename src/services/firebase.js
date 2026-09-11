@@ -163,44 +163,49 @@ async function deleteCollection(collection) {
   if (error) throw error
 }
 
-async function listEmployeesAsFirebaseMap(columns = '*') {
-  const { data, error } = await supabase.from('users').select(columns)
+async function listEmployeesAsFirebaseMap() {
+  // YÊU CẦU: Bảng công chỉ được lấy nhân sự từ bảng nhan_su.
+  // Không được join hoặc đưa các tài khoản hệ thống từ bảng users vào bảng công.
+  const { data, error } = await supabase
+    .from('nhan_su')
+    .select('*')
+    .order('ma_nhan_vien', { ascending: true })
+
   if (error) throw error
   if (!data?.length) return null
 
   const out = {}
-  data.forEach((u) => {
-    const app = mapUserToApp(u) || {}
-    out[u.id] = {
-      ...app,
-      id: u.id,
-      name: app.ho_va_ten || u.name || '',
-      status: app.trang_thai || u.employment_status || ''
+  data.forEach((ns) => {
+    out[ns.id] = {
+      id: ns.id,
+      employeeId: ns.ma_nhan_vien || '',
+      employeeCode: ns.ma_nhan_vien || '',
+      ma_nhan_vien: ns.ma_nhan_vien || '',
+      username: ns.ma_nhan_vien || '',
+      name: ns.ho_ten || '',
+      ho_va_ten: ns.ho_ten || '',
+      ho_ten: ns.ho_ten || '',
+      email: ns.email || '',
+      phone: ns.so_dien_thoai || '',
+      sđt: ns.so_dien_thoai || '',
+      position: ns.chuc_vu || '',
+      vi_tri: ns.chuc_vu || '',
+      chuc_vu: ns.chuc_vu || '',
+      department: ns.bo_phan || '',
+      bo_phan: ns.bo_phan || '',
+      shift: ns.ca_lam || 'Ca ngày',
+      ca_lam_viec: ns.ca_lam || 'Ca ngày',
+      status: ns.trang_thai || 'Đang làm việc',
+      trang_thai: ns.trang_thai || 'Đang làm việc',
+      joinDate: ns.ngay_vao_lam || '',
+      ngay_vao_lam: ns.ngay_vao_lam || '',
+      avatarDataUrl: ns.avatar_url || ''
     }
   })
   return out
 }
 
-/** Directory fields only — skips password/documents/images blobs. */
-const EMPLOYEE_DIRECTORY_COLUMNS = [
-  'id',
-  'name',
-  'employee_id',
-  'username',
-  'email',
-  'phone',
-  'department',
-  'position',
-  'branch',
-  'employment_status',
-  'status',
-  'shift',
-  'role',
-  'join_date',
-  'official_date'
-].join(',')
-
-export const fbGetEmployeesDirectory = () => listEmployeesAsFirebaseMap(EMPLOYEE_DIRECTORY_COLUMNS)
+export const fbGetEmployeesDirectory = () => listEmployeesAsFirebaseMap()
 
 async function pushEmployee(payload) {
   const id = crypto.randomUUID()
@@ -239,14 +244,23 @@ export const fbGet = async (path) => {
   if (parsed.kind === 'employees') {
     if (parsed.id) {
       const { data, error } = await supabase
-        .from('users')
+        .from('nhan_su')
         .select('*')
         .eq('id', parsed.id)
         .maybeSingle()
       if (error) throw error
       if (!data) return null
-      const app = mapUserToApp(data)
-      return { ...app, id: data.id, name: app?.ho_va_ten || data.name }
+      return {
+        id: data.id,
+        employeeId: data.ma_nhan_vien || '',
+        employeeCode: data.ma_nhan_vien || '',
+        name: data.ho_ten || '',
+        ho_va_ten: data.ho_ten || '',
+        position: data.chuc_vu || '',
+        department: data.bo_phan || '',
+        shift: data.ca_lam || 'Ca ngày',
+        status: data.trang_thai || 'Đang làm việc'
+      }
     }
     return listEmployeesAsFirebaseMap()
   }
@@ -284,11 +298,56 @@ export const fbGetAttendanceByEmployee = async (employeeId) => {
 
 /**
  * Load attendance logs for one YYYY-MM (filters by data.date prefix).
- * Paginates past Supabase's default 1000-row response cap.
+ * Ưu tiên đọc từ bảng cham_cong chính thức của Company B.
  */
 export const fbGetAttendanceLogsByMonth = async (month) => {
   const period = String(month || '').trim()
   if (!/^\d{4}-\d{2}$/.test(period)) return null
+
+  // 1. Đọc từ bảng cham_cong chính thức liên kết với nhan_su
+  try {
+    const { data: ccData, error: ccErr } = await supabase
+      .from('cham_cong')
+      .select('*, nhan_su(id, ma_nhan_vien, ho_ten, chuc_vu, bo_phan, ca_lam)')
+      .gte('ngay', `${period}-01`)
+      .lte('ngay', `${period}-31`)
+      .order('ngay', { ascending: true })
+
+    if (!ccErr && ccData && ccData.length > 0) {
+      const out = {}
+      ccData.forEach((row) => {
+        const ns = row.nhan_su || {}
+        out[row.id] = {
+          id: row.id,
+          employeeId: row.nhan_su_id,
+          employeeCode: ns.ma_nhan_vien || '',
+          employeeName: ns.ho_ten || '',
+          sourceEmployeeCode: ns.ma_nhan_vien || '',
+          sourceEmployeeName: ns.ho_ten || '',
+          department: ns.bo_phan || '',
+          position: ns.chuc_vu || '',
+          date: row.ngay,
+          checkIn: row.gio_vao || '',
+          checkOut: row.gio_ra || '',
+          cong: Number(row.tong_cong) || 0,
+          hours: Number(row.gia_tri_goc) || (Number(row.tong_cong) * 8) || 0,
+          giaTriGoc: row.gia_tri_goc || '',
+          rawVal: row.gia_tri_goc || '',
+          shiftName: row.ca_lam || ns.ca_lam || 'Ca ngày',
+          tangCa: Number(row.tang_ca) || 0,
+          phepSuDung: Number(row.phep_su_dung) || 0,
+          congLamLe: Number(row.cong_lam_le) || 0,
+          congLe: Number(row.cong_le) || 0,
+          status: row.notes || (Number(row.tong_cong) >= 1 ? 'Đủ' : Number(row.tong_cong) > 0 ? 'Nửa ngày' : 'Nghỉ'),
+          notes: row.notes || '',
+          xacNhan: row.xac_nhan || false
+        }
+      })
+      return out
+    }
+  } catch (err) {
+    console.warn('[fbGetAttendanceLogsByMonth] Lỗi đọc từ bảng cham_cong:', err)
+  }
 
   const pageSize = 1000
   const rows = []

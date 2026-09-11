@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import XLSX from 'xlsx-js-style'
 import { fbPush, fbUpdate } from '../services/firebase'
+import { supabase } from '../services/supabase'
 import {
   applyEmployeeToAttendanceLog,
   buildAttendanceRecordKey,
@@ -411,7 +412,12 @@ function AttendanceImportModal({
 
     const lanIndexes = []
     headers.forEach((h, idx) => {
-      if (/^l[aầ]n\s*\d+$/i.test(h) || h.includes('lần') || /^lan\s*\d+$/i.test(h)) {
+      if (
+        /^l[aầ]n\s*\d+$/i.test(h) ||
+        h.includes('lần') ||
+        /^lan\s*\d+$/i.test(h) ||
+        /^(?:v[aà]o|ra)\s*\d*$/i.test(h)
+      ) {
         lanIndexes.push(idx)
       }
     })
@@ -474,40 +480,91 @@ function AttendanceImportModal({
     return { logs, skipped }
   }
 
-  const processMatrixFormat = (jsonData, headers, headerRowIdx, year, month) => {
-    const mergedData = {}
-    const nameColIdx = headers.findIndex(h =>
-      String(h).includes('họ tên') || String(h).includes('tên') || String(h).includes('name')
-    )
-    const codeColIdx = headers.findIndex(h =>
-      String(h).includes('mã') || String(h).includes('code')
-    )
+  const processMatrixFormat = (jsonData, optionsOrHeaders, headerRowIdx, yearArg, monthArg) => {
+    let dateCols = []
+    let nameColIdx = -1
+    let codeColIdx = -1
+    let posColIdx = -1
+    let dataStartRow = 0
+    let year = yearArg
+    let month = monthArg
 
-    const dateCols = []
-    headers.forEach((h, idx) => {
-      const valStr = String(h).trim()
-      if (valStr && /^\d{1,2}$/.test(valStr)) {
-        const val = Number(valStr)
-        if (val >= 1 && val <= 31) dateCols.push({ day: val, idx })
+    if (optionsOrHeaders && typeof optionsOrHeaders === 'object' && !Array.isArray(optionsOrHeaders)) {
+      dateCols = optionsOrHeaders.matrixDayCols || []
+      nameColIdx = optionsOrHeaders.nameColIdx ?? -1
+      codeColIdx = optionsOrHeaders.codeColIdx ?? -1
+      posColIdx = optionsOrHeaders.posColIdx ?? -1
+      dataStartRow = optionsOrHeaders.dataStartRow ?? (headerRowIdx + 1)
+      year = optionsOrHeaders.year ?? yearArg
+      month = optionsOrHeaders.month ?? monthArg
+    } else {
+      const headers = optionsOrHeaders || []
+      nameColIdx = headers.findIndex(h =>
+        String(h).includes('họ tên') || String(h).includes('tên') || String(h).includes('name')
+      )
+      codeColIdx = headers.findIndex(h =>
+        String(h).includes('mã') || String(h).includes('code')
+      )
+      headers.forEach((h, idx) => {
+        const valStr = String(h).trim()
+        if (valStr && /^\d{1,2}$/.test(valStr)) {
+          const val = Number(valStr)
+          if (val >= 1 && val <= 31) dateCols.push({ day: val, idx })
+        }
+      })
+      dataStartRow = (headerRowIdx >= 0 ? headerRowIdx : 0) + 1
+      if (dataStartRow < jsonData.length) {
+        const nextRow = jsonData[dataStartRow] || []
+        const weekdayCount = nextRow.filter(c => /^(t[2-7]|cn|thứ\s*[2-7]|chủ\s*nhật)$/i.test(String(c || '').trim())).length
+        if (weekdayCount >= 3) dataStartRow++
       }
-    })
+    }
 
-    let currentSysEmp = null
+    if (!year || !month) {
+      const [y, m] = importMonth.split('-').map(Number)
+      year = year || y
+      month = month || m
+    }
 
-    for (let r = headerRowIdx + 1; r < jsonData.length; r++) {
+    // Check if sheet contains hours worked (values >= 2.5) or standard workdays (công <= 1.0)
+    let countOver2_5 = 0
+    for (let r = dataStartRow; r < jsonData.length; r++) {
+      const row = jsonData[r] || []
+      const nameVal = nameColIdx >= 0 ? String(row[nameColIdx] || '').trim() : ''
+      const codeVal = codeColIdx >= 0 ? String(row[codeColIdx] || '').trim() : ''
+      if (!nameVal && !codeVal) continue
+      const lowerName = nameVal.toLowerCase()
+      if (lowerName.startsWith('tổng') || lowerName.startsWith('cộng') || lowerName.startsWith('bình quân')) break
+
+      dateCols.forEach(({ idx }) => {
+        const raw = String(row[idx] ?? '').replace(',', '.').trim()
+        const n = parseFloat(raw)
+        if (!isNaN(n) && n >= 2.5) countOver2_5++
+      })
+    }
+    const isHourMode = countOver2_5 >= 3
+
+    const mergedData = {}
+
+    for (let r = dataStartRow; r < jsonData.length; r++) {
       const row = jsonData[r]
       if (!row || row.length === 0) continue
 
-      const empName = nameColIdx >= 0 ? row[nameColIdx] : ''
-      const empCode = codeColIdx >= 0 ? row[codeColIdx] : ''
+      const empName = nameColIdx >= 0 ? String(row[nameColIdx] ?? '').trim() : ''
+      const empCode = codeColIdx >= 0 ? String(row[codeColIdx] ?? '').trim() : ''
+      const empPos = posColIdx >= 0 ? String(row[posColIdx] ?? '').trim() : ''
 
-      if (empName || empCode) {
-        currentSysEmp = attachSourceIdentity(
-          findEmployee(empCode, empName) || buildFallbackEmployee(empCode, empName, r),
-          empCode,
-          empName
-        )
-      }
+      if (!empName && !empCode) continue
+
+      const lowerName = empName.toLowerCase()
+      if (lowerName.startsWith('tổng') || lowerName.startsWith('cộng') || lowerName.startsWith('bình quân')) break
+
+      const currentSysEmp = attachSourceIdentity(
+        findEmployee(empCode, empName) || buildFallbackEmployee(empCode, empName, r),
+        empCode,
+        empName
+      )
+
       dateCols.forEach(({ day, idx }) => {
         const cellContent = row[idx]
         if (cellContent === undefined || cellContent === null || String(cellContent).trim() === '') return
@@ -526,29 +583,62 @@ function AttendanceImportModal({
 
         if (extractedTimes.length > 0) {
           if (!mergedData[key]) {
-            mergedData[key] = { emp: currentSysEmp, day, times: [], rawVal: cellStr }
+            mergedData[key] = { emp: currentSysEmp, day, times: [], rawVal: cellStr, pos: empPos }
           }
           mergedData[key].times.push(...extractedTimes)
         } else {
-          // Xử lý giá trị chấm công trực tiếp: 0, 1, 0.5, P, X...
           const upper = cellStr.toUpperCase()
           let cong = 0
-          if (upper === '1' || upper === 'X') cong = 1.0
-          else if (upper === '0.5') cong = 0.5
-          else if (upper === 'P') cong = 1.0
-          else {
-            const n = parseFloat(cellStr)
-            if (!isNaN(n)) cong = n
+          let hours = 0
+          let status = 'Đủ'
+
+          if (isHourMode) {
+            const n = parseFloat(cellStr.replace(',', '.'))
+            if (!isNaN(n)) {
+              hours = Number(n.toFixed(2))
+              // Quy tắc chuẩn: 8 giờ = 1 công, tối đa 1 công/ngày, không round từng ngày
+              cong = Math.min(hours / 8, 1)
+              status = hours > 0 ? `${hours}h` : 'Nghỉ'
+            }
+          } else {
+            if (upper === '1' || upper === 'X' || upper === 'Đ' || upper === 'DU') {
+              cong = 1.0
+              hours = 8.0
+              status = 'Đủ'
+            } else if (upper === '0.5') {
+              cong = 0.5
+              hours = 4.0
+              status = 'Nửa ngày'
+            } else if (upper.startsWith('P')) {
+              const pVal = parseFloat(upper.replace('P', '')) || 1.0
+              cong = pVal
+              hours = pVal * 8.0
+              status = 'Phép'
+            } else if (upper === '0' || upper === '0.00' || upper === 'KP' || upper === 'OFF') {
+              cong = 0
+              hours = 0
+              status = 'Nghỉ'
+            } else {
+              const n = parseFloat(cellStr.replace(',', '.'))
+              if (!isNaN(n)) {
+                cong = n
+                hours = Math.round(n * 8 * 100) / 100
+                status = cong >= 1 ? 'Đủ' : cong > 0 ? 'Nửa ngày' : 'Nghỉ'
+              }
+            }
           }
 
           if (!mergedData[key]) {
             mergedData[key] = {
               emp: currentSysEmp,
               day,
-              times: cong > 0 ? ['08:00', '17:00'] : [],
+              times: hours > 0 ? ['08:00', '17:00'] : [],
               rawVal: cellStr,
               directCong: cong,
-              isCodeOnly: true
+              directHours: hours,
+              directStatus: status,
+              isCodeOnly: true,
+              pos: empPos
             }
           }
         }
@@ -565,18 +655,19 @@ function AttendanceImportModal({
 
       if (item.isCodeOnly) {
         const directStats = {
-          checkIn: item.directCong > 0 ? '08:00' : '',
-          checkOut: item.directCong > 0 ? '17:00' : '',
-          hours: item.directCong * 8,
+          checkIn: item.directHours > 0 ? '08:00' : '',
+          checkOut: item.directHours > 0 ? '17:00' : '',
+          hours: item.directHours,
           cong: item.directCong,
-          status: item.rawVal,
+          status: item.directStatus || item.rawVal,
           kyHieu: item.rawVal,
           lateMinutes: 0,
           earlyMinutes: 0
         }
         logs.push(buildLog(emp, dateStr, directStats, {
           cong: item.directCong,
-          hours: item.directCong * 8,
+          hours: item.directHours,
+          position: item.pos,
           sourceEmployeeCode: emp._sourceEmployeeCode || emp.employeeCode,
           sourceEmployeeName: emp._sourceEmployeeName || emp.employeeName
         }))
@@ -587,7 +678,11 @@ function AttendanceImportModal({
       const stats = calculateStats(times, emp)
       if (!stats) return
 
-      logs.push(buildLog(emp, dateStr, stats))
+      logs.push(buildLog(emp, dateStr, stats, {
+        position: item.pos,
+        sourceEmployeeCode: emp._sourceEmployeeCode || emp.employeeCode,
+        sourceEmployeeName: emp._sourceEmployeeName || emp.employeeName
+      }))
     })
 
     return { logs, skipped: [] }
@@ -657,15 +752,21 @@ function AttendanceImportModal({
   }
 
   const detectFormat = (headers) => {
-    const hasFull =
-      headers.some(h => h.includes('công+') || h.includes('cong+') || h === 'tc1' || h.includes('kí hiệu') || h.includes('tổng giờ') || h.includes('chức vụ'))
-    const hasLan = headers.some(h => /l[aầ]n\s*\d+/i.test(h) || h.startsWith('lần') || h.startsWith('lan '))
-    const hasNgay = headers.some(h => h.includes('ngày') || h.includes('ngay') || h === 'date')
-    const hasDayCols = headers.some(h => /^\d{1,2}$/.test(String(h).trim()) && Number(h) >= 1 && Number(h) <= 31)
-
-    if (hasFull && hasNgay) return 'full'
-    if (hasLan && hasNgay) return 'punch'
+    const hasDayCols = headers.filter(h => /^\d{1,2}$/.test(String(h).trim()) && Number(h) >= 1 && Number(h) <= 31).length >= 5
     if (hasDayCols) return 'matrix'
+
+    const hasLan = headers.some(h =>
+      /l[aầ]n\s*\d+/i.test(h) ||
+      h.startsWith('lần') ||
+      h.startsWith('lan ') ||
+      /^(?:v[aà]o|ra)\s*\d+/i.test(h)
+    )
+    const hasNgay = headers.some(h => h.includes('ngày') || h.includes('ngay') || h === 'date')
+    if (hasLan && hasNgay) return 'punch'
+
+    const hasFull = headers.some(h => h.includes('công+') || h.includes('cong+') || h === 'tc1' || h.includes('kí hiệu') || h.includes('tổng giờ'))
+    if (hasFull && hasNgay) return 'full'
+
     return 'list'
   }
 
@@ -941,61 +1042,208 @@ function AttendanceImportModal({
     setLoading(true)
     try {
       const data = await file.arrayBuffer()
-      const workbook = read(data)
-      const worksheet = workbook.Sheets[workbook.SheetNames[0]]
-      // raw:true to keep Excel time serials; also keep strings
-      const jsonData = utils.sheet_to_json(worksheet, { header: 1, raw: true, defval: '' })
+      const workbook = read(data, { type: 'array' })
 
-      let headerRowIdx = -1
-      let headers = []
+      // Helper trích xuất ngày từ ô (hỗ trợ cả số nguyên 1..31, text '01'..'31', date serial Excel 46235..46265, và Date objects)
+      const extractDayFromCell = (cell) => {
+        if (cell === null || cell === undefined || cell === '') return null
+        if (typeof cell === 'number') {
+          if (cell >= 1 && cell <= 31) return { day: Math.round(cell) }
+          if (cell >= 35000 && cell <= 65000) {
+            const d = new Date(Math.round((cell - 25569) * 86400 * 1000))
+            return { day: d.getUTCDate(), month: d.getUTCMonth() + 1, year: d.getUTCFullYear() }
+          }
+        }
+        if (cell instanceof Date) {
+          return { day: cell.getDate(), month: cell.getMonth() + 1, year: cell.getFullYear() }
+        }
+        const s = String(cell).trim()
+        if (/^\d{1,2}$/.test(s)) {
+          const num = Number(s)
+          if (num >= 1 && num <= 31) return { day: num }
+        }
+        const dateMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}))?$/)
+        if (dateMatch) {
+          const day = Number(dateMatch[1])
+          const month = Number(dateMatch[2])
+          const year = dateMatch[3] ? Number(dateMatch[3]) : undefined
+          if (day >= 1 && day <= 31) return { day, month, year }
+        }
+        const isoMatch = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/)
+        if (isoMatch) {
+          const year = Number(isoMatch[1])
+          const month = Number(isoMatch[2])
+          const day = Number(isoMatch[3])
+          if (day >= 1 && day <= 31) return { day, month, year }
+        }
+        return null
+      }
 
-      for (let i = 0; i < Math.min(jsonData.length, 15); i++) {
-        const row = jsonData[i] || []
-        const lower = row.map(c => String(c || '').toLowerCase().trim())
-        const rowStr = lower.join(' ')
-        if (
-          (rowStr.includes('mã nv') && rowStr.includes('ngày')) ||
-          (rowStr.includes('ma nv') && rowStr.includes('ngay')) ||
-          (rowStr.includes('họ tên') || rowStr.includes('tên nv')) ||
-          (rowStr.includes('mã') && rowStr.includes('ngày')) ||
-          lower.some(h => /l[aầ]n\s*\d+/i.test(h))
-        ) {
-          headerRowIdx = i
-          headers = lower
-          break
+      // Chọn sheet tốt nhất: ưu tiên sheet chứa ma trận ngày hoặc nhiều dòng dữ liệu chấm công nhất
+      let worksheet = workbook.Sheets[workbook.SheetNames[0]]
+      let jsonData = utils.sheet_to_json(worksheet, { header: 1, raw: true, defval: '' })
+      let selectedSheetName = workbook.SheetNames[0]
+
+      if (workbook.SheetNames.length > 1) {
+        let maxScore = -1
+        for (const sName of workbook.SheetNames) {
+          const sWs = workbook.Sheets[sName]
+          const sData = utils.sheet_to_json(sWs, { header: 1, raw: true, defval: '' })
+          if (!sData || sData.length === 0) continue
+
+          let dayColsInSheet = 0
+          for (let r = 0; r < Math.min(sData.length, 10); r++) {
+            const count = (sData[r] || []).filter(c => extractDayFromCell(c) !== null).length
+            if (count > dayColsInSheet) dayColsInSheet = count
+          }
+
+          // Ma trận ngày ưu tiên cao nhất, tiếp theo là số dòng dữ liệu
+          const score = dayColsInSheet >= 7 ? 10000 + dayColsInSheet : sData.length
+          if (score > maxScore) {
+            maxScore = score
+            worksheet = sWs
+            jsonData = sData
+            selectedSheetName = sName
+          }
         }
       }
 
-      if (headerRowIdx === -1) {
-        throw new Error('Không tìm thấy dòng tiêu đề hợp lệ (cần Mã NV, Ngày, Lần 1...)')
+      // 1. Kiểm tra định dạng ma trận ngày (tìm hàng có nhiều cột ngày 1..31 nhất)
+      let bestDayRowIdx = -1
+      let bestDayCols = []
+
+      for (let r = 0; r < Math.min(jsonData.length, 15); r++) {
+        const row = jsonData[r] || []
+        const cols = []
+        row.forEach((cell, idx) => {
+          const info = extractDayFromCell(cell)
+          if (info) {
+            cols.push({ day: info.day, idx, month: info.month, year: info.year })
+          }
+        })
+        if (cols.length > bestDayCols.length) {
+          bestDayRowIdx = r
+          bestDayCols = cols
+        }
       }
 
-      const format = detectFormat(headers)
+      let format = ''
       let result = { logs: [], skipped: [] }
       let detectedDays = []
       let modeLabel = 'Danh sách'
+      let headerRowIdx = -1
+      let headers = []
 
-      if (format === 'full') {
-        result = processFullAttendanceFormat(jsonData, headers, headerRowIdx)
-        modeLabel = 'Bảng chấm công đầy đủ'
-      } else if (format === 'punch') {
-        result = processPunchLogFormat(jsonData, headers, headerRowIdx)
-        modeLabel = 'Nhật ký chấm công (Lần 1–7)'
-      } else if (format === 'matrix') {
-        const [year, month] = importMonth.split('-').map(Number)
-        headers.forEach((h) => {
-          const trimmedH = String(h).trim()
-          if (/^\d{1,2}$/.test(trimmedH)) {
-            const val = Number(trimmedH)
-            if (val >= 1 && val <= 31) detectedDays.push(val)
+      if (bestDayCols.length >= 7) {
+        format = 'matrix'
+        const matrixDayRowIdx = bestDayRowIdx
+        const matrixDayCols = bestDayCols
+        detectedDays = matrixDayCols.map(d => d.day).sort((a, b) => a - b)
+
+        // Tự động nhận diện tháng/năm từ date serial trong hàng ngày, hoặc từ tiêu đề file/tên sheet
+        let [year, month] = importMonth.split('-').map(Number)
+        if (bestDayCols[0]?.year) year = bestDayCols[0].year
+        if (bestDayCols[0]?.month) month = bestDayCols[0].month
+
+        const titleSources = [
+          workbook.SheetNames[0],
+          ...jsonData.slice(0, 6).map(r => (r || []).join(' '))
+        ]
+        for (const text of titleSources) {
+          const m = String(text).match(/th[aá]ng\s*(\d{1,2})(?:[\/\-\s]+(\d{4}))?/i)
+          if (m) {
+            const mVal = Number(m[1])
+            if (mVal >= 1 && mVal <= 12) {
+              month = mVal
+              if (m[2]) year = Number(m[2])
+              break
+            }
           }
+        }
+        setImportMonth(`${year}-${String(month).padStart(2, '0')}`)
+
+        // Quét tìm các cột thông tin nhân sự trên toàn bộ các hàng từ 0 đến matrixDayRowIdx + 1
+        let codeColIdx = -1, nameColIdx = -1, posColIdx = -1
+        for (let r = 0; r <= Math.min(jsonData.length - 1, matrixDayRowIdx + 1); r++) {
+          const row = jsonData[r] || []
+          row.forEach((cell, idx) => {
+            const s = String(cell || '').toLowerCase().trim()
+            if (codeColIdx === -1 && (s.includes('mã nv') || s.includes('mã nhân viên') || s.includes('mã n.viên') || s.includes('mã') || s.includes('code'))) codeColIdx = idx
+            if (nameColIdx === -1 && (s.includes('họ và tên') || s.includes('họ tên') || s.includes('tên nhân viên') || s.includes('tên nv') || s.includes('họ va ten') || s === 'họ tên' || s.includes('tên') || s.includes('name'))) nameColIdx = idx
+            if (posColIdx === -1 && (s.includes('chức vụ') || s.includes('vị trí') || s.includes('phòng ban') || s.includes('phòng') || s.includes('bộ phận'))) posColIdx = idx
+          })
+        }
+
+        if (nameColIdx === -1) {
+          nameColIdx = codeColIdx === 0 ? 1 : 1
+        }
+
+        // Bỏ qua dòng thứ trong tuần (T2, T3, T4... CN) hoặc dòng tiêu đề phụ
+        let dataStartRow = matrixDayRowIdx + 1
+        while (dataStartRow < jsonData.length) {
+          const row = jsonData[dataStartRow] || []
+          const weekdayCount = row.filter(c => /^(t[2-7]|cn|thứ\s*[2-7]|chủ\s*nhật)$/i.test(String(c || '').trim())).length
+          const nameVal = nameColIdx >= 0 ? String(row[nameColIdx] || '').trim() : ''
+          const codeVal = codeColIdx >= 0 ? String(row[codeColIdx] || '').trim() : ''
+          const lowerName = nameVal.toLowerCase()
+
+          if (
+            weekdayCount >= 3 ||
+            (!nameVal && !codeVal) ||
+            lowerName.includes('họ tên') ||
+            lowerName.includes('nhân sự') ||
+            lowerName.includes('xác nhận')
+          ) {
+            dataStartRow++
+          } else {
+            break
+          }
+        }
+
+        result = processMatrixFormat(jsonData, {
+          matrixDayCols,
+          codeColIdx,
+          nameColIdx,
+          posColIdx,
+          dataStartRow,
+          year,
+          month
         })
-        detectedDays.sort((a, b) => a - b)
-        result = processMatrixFormat(jsonData, headers, headerRowIdx, year, month)
         modeLabel = 'Bảng công (Ma trận ngày)'
       } else {
-        result = processListFormat(jsonData, headers, headerRowIdx)
-        modeLabel = 'Danh sách (Vào/Ra)'
+        for (let i = 0; i < Math.min(jsonData.length, 15); i++) {
+          const row = jsonData[i] || []
+          const lower = row.map(c => String(c || '').toLowerCase().trim())
+          const rowStr = lower.join(' ')
+          if (
+            (rowStr.includes('mã nv') && rowStr.includes('ngày')) ||
+            (rowStr.includes('ma nv') && rowStr.includes('ngay')) ||
+            (rowStr.includes('họ tên') || rowStr.includes('tên nv')) ||
+            (rowStr.includes('mã') && rowStr.includes('ngày')) ||
+            lower.some(h => /l[aầ]n\s*\d+/i.test(h))
+          ) {
+            headerRowIdx = i
+            headers = lower
+            break
+          }
+        }
+
+        if (headerRowIdx === -1) {
+          throw new Error('Không tìm thấy dòng tiêu đề hợp lệ (cần Mã NV, Ngày, Lần 1...)')
+        }
+
+        format = detectFormat(headers)
+
+        if (format === 'full') {
+          result = processFullAttendanceFormat(jsonData, headers, headerRowIdx)
+          modeLabel = 'Bảng chấm công đầy đủ'
+        } else if (format === 'punch') {
+          result = processPunchLogFormat(jsonData, headers, headerRowIdx)
+          modeLabel = 'Nhật ký chấm công (Lần 1–7)'
+        } else {
+          result = processListFormat(jsonData, headers, headerRowIdx)
+          modeLabel = 'Danh sách (Vào/Ra)'
+        }
       }
 
       if (result.logs.length === 0) {
@@ -1121,6 +1369,58 @@ function AttendanceImportModal({
             chunk.map(log => fbPush('hr/attendanceLogs', sanitizeLog(log)))
           )
           count += chunk.length
+        }
+
+        // Lưu trực tiếp vào bảng cham_cong của Supabase và cập nhật nhan_su
+        try {
+          const DEFAULT_COMPANY_ID = '00000000-0000-0000-0000-000000000001'
+          const validLogs = previewData.logs.filter(
+            log => !skippedSourceKeys.has(log._sourceEmployeeKey) && log.employeeId && !String(log.employeeId).startsWith('external:')
+          )
+
+          if (validLogs.length > 0) {
+            // Cập nhật chức vụ từ Excel vào nhan_su nếu có
+            const updatedPositions = new Map()
+            validLogs.forEach(log => {
+              if (log.position && log.employeeId) {
+                updatedPositions.set(log.employeeId, log.position)
+              }
+            })
+            for (const [empId, pos] of updatedPositions.entries()) {
+              await supabase.from('nhan_su').update({ chuc_vu: pos }).eq('id', empId)
+            }
+
+            // Ghi vào bảng cham_cong với đúng nhan_su_id
+            const chamCongRows = validLogs.map(log => {
+              const rawGiaTri = String(log.rawVal ?? log.kyHieu ?? log.hours ?? log.cong ?? '')
+              const congVal = Number(log.cong ?? 0)
+              return {
+                company_id: DEFAULT_COMPANY_ID,
+                nhan_su_id: log.employeeId,
+                ngay: String(log.date || '').slice(0, 10),
+                gia_tri_goc: rawGiaTri || null,
+                gio_vao: log.checkIn || null,
+                gio_ra: log.checkOut || null,
+                ca_lam: log.shiftName || 'Ca ngày',
+                tang_ca: 0,
+                phep_su_dung: 0,
+                cong_lam_le: 0,
+                cong_le: 0,
+                tong_cong: isNaN(congVal) ? 0 : congVal,
+                notes: log.notes || null,
+                xac_nhan: false
+              }
+            })
+
+            for (let i = 0; i < chamCongRows.length; i += BATCH_SIZE) {
+              const chunk = chamCongRows.slice(i, i + BATCH_SIZE)
+              await supabase
+                .from('cham_cong')
+                .upsert(chunk, { onConflict: 'company_id,nhan_su_id,ngay' })
+            }
+          }
+        } catch (dbErr) {
+          console.error('Lỗi khi lưu vào bảng cham_cong:', dbErr)
         }
 
         const updateMsg = logsToUpdate.length ? ` Cập nhật lại ${logsToUpdate.length} dòng theo nhân sự mới chọn.` : ''

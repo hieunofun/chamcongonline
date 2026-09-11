@@ -1,8 +1,10 @@
 
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+const cleanEnv = (val) => (typeof val === 'string' ? val.replace(/^[\uFEFF\s]+|[\uFEFF\s]+$/g, '') : val)
+
+const supabaseUrl = cleanEnv(import.meta.env.VITE_SUPABASE_URL)
+const supabaseAnonKey = cleanEnv(import.meta.env.VITE_SUPABASE_ANON_KEY)
 
 const OLD_COMPANY_SUPABASE_HOST = 'xrxhfjecwpwqalbtbyui'
 
@@ -25,7 +27,7 @@ if (supabaseUrl.includes('your-company-b-project-id')) {
 }
 
 export const DEFAULT_COMPANY_ID =
-  import.meta.env.VITE_DEFAULT_COMPANY_ID || '00000000-0000-0000-0000-000000000001'
+  cleanEnv(import.meta.env.VITE_DEFAULT_COMPANY_ID) || '00000000-0000-0000-0000-000000000001'
 
 export const supabase = createClient(
   supabaseUrl || 'https://placeholder.supabase.co',

@@ -903,3 +903,9 @@
   background: #f8fafc;
 }
 
+.attendance-matrix-table td.matrix-cell.is-holiday {
+  color: #8a5a00;
+  background: #fff3cd;
+  font-weight: 700;
+}
+

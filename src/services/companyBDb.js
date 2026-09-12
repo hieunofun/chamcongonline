@@ -45,7 +45,10 @@ export async function upsertEmployees(employees, companyId = DEFAULT_COMPANY_ID)
     chuc_vu: emp.chuc_vu || emp.position || '',
     bo_phan: emp.bo_phan || emp.department || '',
     ca_lam: emp.ca_lam || emp.shift || 'Ca ngày',
-    trang_thai: emp.trang_thai || 'Đang làm việc',
+    // Giữ nguyên trạng thái HR nhập; hồ sơ rỗng không được gán mặc định.
+    trang_thai: String(
+      emp.trang_thai ?? emp.employmentStatus ?? emp.employment_status ?? emp.status ?? ''
+    ).trim(),
     updated_at: new Date().toISOString()
   }))
 

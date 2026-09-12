@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import EmployeeDirectory from '../components/EmployeeDirectory'
 import { supabase } from '../services/supabase'
-import { formatDateDisplay, mapAppToUser, mapUserToApp, parseFlexibleDate, runUsersMutationWithSchemaFallback, USERS_DIRECTORY_COLUMNS, getMissingUsersColumnFromError } from '../utils/helpers'
+import { formatDateDisplay, getEmployeeEmploymentStatus, mapAppToUser, mapUserToApp, parseFlexibleDate, runUsersMutationWithSchemaFallback, USERS_DIRECTORY_COLUMNS, getMissingUsersColumnFromError } from '../utils/helpers'
 
 const loadXlsx = () => import('xlsx')
 
@@ -119,7 +119,7 @@ function Employees() {
         let filtered = employees.filter(item => {
             if (!item) return false
 
-            const tinhTrang = item.tinh_trang || item.status || ''
+            const tinhTrang = getEmployeeEmploymentStatus(item)
             const trangThai = item.trang_thai || ''
             // Mặc định ẩn NV nghỉ việc; chỉ hiện khi chọn lọc "Nghỉ việc"
             if (!filterStatus && (trangThai === 'Nghỉ việc' || tinhTrang === 'Nghỉ việc')) return false
@@ -138,9 +138,7 @@ function Employees() {
                 || (filterBranch === '__none__' ? !item.chi_nhanh : item.chi_nhanh === filterBranch)
             const matchDept = !filterDept
                 || (filterDept === '__none__' ? !item.bo_phan : item.bo_phan === filterDept)
-            const matchStatus = !filterStatus
-                || tinhTrang === filterStatus
-                || trangThai === filterStatus
+            const matchStatus = !filterStatus || tinhTrang === filterStatus
             const contractType = item.loai_hop_dong || item.contractType || ''
             const matchContract = !filterContract || contractType === filterContract
             const matchShift = !filterShift
@@ -224,7 +222,7 @@ function Employees() {
         idx + 1,
         emp.employeeId || '',
         emp.chi_nhanh || '',
-        emp.trang_thai || emp.status || '',
+        getEmployeeEmploymentStatus(emp),
         emp.ho_va_ten || emp.name || emp.Tên || '',
         emp.gioi_tinh || '',
         formatDateDisplay(emp.ngay_sinh || emp.dob) === '-' ? '' : formatDateDisplay(emp.ngay_sinh || emp.dob),
@@ -585,7 +583,7 @@ function Employees() {
 
 
 
-    const isActiveEmployee = (e) => (e.trang_thai || e.status || '') !== 'Nghỉ việc'
+    const isActiveEmployee = (e) => getEmployeeEmploymentStatus(e) !== 'Nghỉ việc'
     const activeEmployees = employees.filter(isActiveEmployee)
 
     // Employees scoped by selected branch (for department tabs)
@@ -649,7 +647,7 @@ function Employees() {
     const renderCard = (emp, idx) => {
         const name = emp.ho_va_ten || emp.name || emp.Tên || 'N/A'
         const avatar = emp.avatarDataUrl || emp.avatarUrl || emp.avatar || ''
-        const status = emp.trang_thai || emp.status || ''
+        const status = getEmployeeEmploymentStatus(emp)
         return (
             <article key={emp.id || idx} className="employee-photo-card">
                 <div className="employee-photo-card__media">
@@ -700,7 +698,7 @@ function Employees() {
     const renderListRow = (emp, idx) => {
         const name = emp.ho_va_ten || emp.name || emp.Tên || 'N/A'
         const avatar = emp.avatarDataUrl || emp.avatarUrl || emp.avatar || ''
-        const status = emp.trang_thai || emp.status || ''
+        const status = getEmployeeEmploymentStatus(emp)
         return (
             <div key={emp.id || idx} className="employee-list-row">
                 <div className="employee-list-row__photo">

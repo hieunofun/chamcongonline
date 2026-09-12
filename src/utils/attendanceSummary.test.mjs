@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildAttendanceSummary } from './attendanceSummary.js'
 
-test('keeps an unmatched source employee in the monthly attendance summary', () => {
+test('keeps an unmatched source employee and recalculates punches by actual minutes', () => {
   const rows = buildAttendanceSummary({
     attendanceLogs: [{
       employeeId: 'external:00002::nguyenbuikhanhvan',
@@ -26,8 +26,9 @@ test('keeps an unmatched source employee in the monthly attendance summary', () 
   assert.equal(rows[0].employeeCode, '00002')
   assert.equal(rows[0].employeeName, 'Nguyễn Bùi Khánh Vân')
   assert.equal(rows[0].department, 'Văn phòng')
-  assert.equal(rows[0].workdays, 0.9)
-  assert.equal(rows[0].days.get('2026-08-01').hours, 7.2)
+  // 08:20 → 17:30 = 550 phút; Công được chặn tối đa 1 ngày.
+  assert.equal(rows[0].workdays, 1)
+  assert.equal(rows[0].days.get('2026-08-01').hours, 9.17)
 })
 
 test('recalculates the late report from actual punches and each employee shift', () => {
@@ -101,4 +102,24 @@ test('uses configured times for the employee shift in summary reports', () => {
   assert.equal(normal.earlyMinutes, 5)
   assert.equal(sale.lateMinutes, 5)
   assert.equal(sale.earlyMinutes, 10)
+})
+
+test('hiển thị ngày lễ cho nhân viên không có log nhưng không tự cộng công', () => {
+  const rows = buildAttendanceSummary({
+    attendanceLogs: [],
+    employees: [{ id: 'employee-holiday', name: 'Nhân viên ngày lễ' }],
+    month: '2026-09',
+    attendanceSettings: {
+      holidays: [{ date: '2026-09-02', name: 'Quốc khánh' }]
+    }
+  })
+
+  const row = rows[0]
+  const holiday = row.days.get('2026-09-02')
+  assert.equal(holiday.isHoliday, true)
+  assert.equal(holiday.holidayName, 'Quốc khánh')
+  assert.equal(holiday.hours, 0)
+  assert.equal(holiday.workdays, 0)
+  assert.equal(row.attendanceDays, 0)
+  assert.equal(row.workdays, 0)
 })

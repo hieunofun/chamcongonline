@@ -120,7 +120,8 @@ export function parseMatrixSheet(sheetData, yearMonth = '2026-08') {
       chuc_vu: chucVu,
       bo_phan: 'Nhân sự',
       ca_lam: 'Ca ngày',
-      trang_thai: 'Đang làm việc'
+      // File chấm công không phải nguồn xác nhận trạng thái nhân sự.
+      trang_thai: ''
     }
     employees.push(employee)
 

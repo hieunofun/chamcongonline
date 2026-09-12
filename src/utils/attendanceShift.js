@@ -63,8 +63,41 @@ export const normalizeAttendanceShiftSettings = (settings = {}) => {
     standardCheckOut: source.standardCheckOut
   }
 
+  const configuredStandardMinutes = Number(
+    source.standardWorkMinutes ?? source.standardMinutes ?? 480
+  )
+  const standardWorkMinutes = Number.isFinite(configuredStandardMinutes) && configuredStandardMinutes > 0
+    ? Math.round(configuredStandardMinutes)
+    : 480
+  const configuredBreakMinutes = Number(source.unpaidBreakMinutes ?? source.breakMinutes ?? 0)
+  const unpaidBreakMinutes = Number.isFinite(configuredBreakMinutes) && configuredBreakMinutes >= 0
+    ? Math.round(configuredBreakMinutes)
+    : 0
+  const overtimeSource = source.overtime && typeof source.overtime === 'object'
+    ? source.overtime
+    : {}
+  const holidays = Array.isArray(source.holidays)
+    ? source.holidays
+      .map(item => {
+        if (typeof item === 'string') return { date: item.slice(0, 10), name: '' }
+        return {
+          date: String(item?.date || item?.day || '').slice(0, 10),
+          name: String(item?.name || item?.label || '').trim()
+        }
+      })
+      .filter(item => /^\d{4}-\d{2}-\d{2}$/.test(item.date))
+    : []
+
   return {
     timezone: source.timezone || 'Asia/Ho_Chi_Minh',
+    standardWorkMinutes,
+    unpaidBreakMinutes,
+    // HR vẫn là người duyệt tăng ca. Có thể bật rule tự động cho dữ liệu
+    // online/manual, còn import Excel tự đánh dấu tắt ở từng bản ghi.
+    overtime: {
+      autoCalculate: overtimeSource.autoCalculate !== false
+    },
+    holidays,
     shifts: {
       [ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE]: normalizeConfiguredShift(
         ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE,
@@ -88,6 +121,10 @@ export const buildAttendanceShiftSettingsPayload = settings => {
   const administrative = normalized.shifts[ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE]
   return {
     timezone: normalized.timezone,
+    standardWorkMinutes: normalized.standardWorkMinutes,
+    unpaidBreakMinutes: normalized.unpaidBreakMinutes,
+    overtime: normalized.overtime,
+    holidays: normalized.holidays,
     shifts: normalized.shifts,
     // Giữ hai trường cũ để các bản triển khai chưa cập nhật vẫn đọc đúng ca hành chính.
     standardCheckIn: administrative.standardCheckIn,
@@ -319,6 +356,20 @@ export const calculateAttendanceTiming = ({
   const shiftStartMinutes = attendanceTimeToMinutes(shift.start)
   const shiftEndMinutes = attendanceTimeToMinutes(shift.end)
 
+  // Ca đêm có giờ kết thúc nhỏ hơn giờ bắt đầu. Quy đổi mốc kết thúc và
+  // giờ ra sang ngày kế tiếp trước khi tính về sớm để không sinh số âm.
+  const overnightShift =
+    shiftStartMinutes !== null &&
+    shiftEndMinutes !== null &&
+    shiftEndMinutes <= shiftStartMinutes
+  const adjustedShiftEndMinutes = overnightShift
+    ? shiftEndMinutes + 24 * 60
+    : shiftEndMinutes
+  const adjustedCheckOutMinutes =
+    overnightShift && checkOutMinutes !== null && checkOutMinutes < shiftStartMinutes
+      ? checkOutMinutes + 24 * 60
+      : checkOutMinutes
+
   return {
     shift,
     hasCheckIn: checkInMinutes !== null,
@@ -326,9 +377,9 @@ export const calculateAttendanceTiming = ({
     lateMinutes: checkInMinutes === null
       ? null
       : Math.max(0, checkInMinutes - shiftStartMinutes),
-    earlyMinutes: checkOutMinutes === null
+    earlyMinutes: adjustedCheckOutMinutes === null
       ? null
-      : Math.max(0, shiftEndMinutes - checkOutMinutes)
+      : Math.max(0, adjustedShiftEndMinutes - adjustedCheckOutMinutes)
   }
 }
 

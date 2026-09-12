@@ -22,6 +22,10 @@ import {
   formatAttendanceTime,
   resolveAttendanceShift
 } from '../utils/attendanceShift'
+import {
+  calculateAttendanceMetrics,
+  STANDARD_WORK_MINUTES
+} from '../utils/attendanceCalculations'
 
 const { read, utils, writeFile } = XLSX
 
@@ -104,10 +108,11 @@ function AttendanceImportModal({
     const parsed = timeStrs
       .map(t => (typeof t === 'object' && t?.str ? t : parseTime(t)))
       .filter(Boolean)
-      .sort((a, b) => a.val - b.val)
 
     if (parsed.length === 0) return null
 
+    // Giữ thứ tự punch từ máy: ca đêm có thể có Vào 22:00 rồi Ra 06:00,
+    // không được sort theo đồng hồ vì sẽ đảo ngược ca.
     const checkInStr = parsed[0].str
     const checkOutStr = parsed.length > 1 ? parsed[parsed.length - 1].str : null
     const inTime = parsed[0]
@@ -128,22 +133,23 @@ function AttendanceImportModal({
     const shift = resolveAttendanceShift(employee, log, attendanceSettings)
     const [startHour, startMinute] = shift.start.split(':').map(Number)
     const [endHour, endMinute] = shift.end.split(':').map(Number)
-    const STANDARD_START = startHour + startMinute / 60
-    const STANDARD_END = endHour + endMinute / 60
-    const LUNCH_START = 12.0
-    const LUNCH_END = 13.5
-    const LUNCH_DURATION = 1.5
+    const STANDARD_START = startHour * 60 + startMinute
+    const STANDARD_END = endHour * 60 + endMinute
+    const metrics = calculateAttendanceMetrics({
+      checkIn: checkInStr,
+      checkOut: checkOutStr,
+      standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
+      // Import Excel không tự trừ lunch cứng; nếu doanh nghiệp muốn trừ
+      // khoảng nghỉ thì khai báo rõ trong Cài đặt chấm công.
+      breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
+      autoCalculateOvertime: false
+    })
+    const hours = metrics.hours
 
-    let hours = outTime.val - inTime.val
-    if (inTime.val <= LUNCH_END && outTime.val >= LUNCH_START) {
-      hours -= LUNCH_DURATION
-    }
-    hours = Math.max(0, Math.round(hours * 10) / 10)
-
-    const isLate = inTime.val > STANDARD_START
-    const isEarly = outTime.val < STANDARD_END
-    let lateMinutes = isLate ? Math.round((inTime.val - STANDARD_START) * 60) : 0
-    let earlyMinutes = isEarly ? Math.round((STANDARD_END - outTime.val) * 60) : 0
+    const isLate = inTime.h * 60 + inTime.m > STANDARD_START
+    const isEarly = outTime.h * 60 + outTime.m < STANDARD_END
+    let lateMinutes = isLate ? Math.max(0, inTime.h * 60 + inTime.m - STANDARD_START) : 0
+    let earlyMinutes = isEarly ? Math.max(0, STANDARD_END - (outTime.h * 60 + outTime.m)) : 0
 
     let status = 'Đủ'
     const notes = []
@@ -156,6 +162,8 @@ function AttendanceImportModal({
       checkIn: checkInStr,
       checkOut: checkOutStr,
       hours,
+      regularWorkdays: metrics.regularWorkdays,
+      overtimeHours: 0,
       status,
       lateMinutes,
       earlyMinutes,
@@ -211,7 +219,18 @@ function AttendanceImportModal({
       checkOutDate.setHours(Number(outH), Number(outM) || 0, 0, 0)
     }
 
-    const hours = Number(extra.hours ?? stats.hours ?? 0) || 0
+    const hasActualPunchPair = Boolean(checkInStr && checkOutStr && !extra.syntheticPunch)
+    const metrics = calculateAttendanceMetrics({
+      log: extra,
+      checkIn: checkInStr,
+      checkOut: checkOutStr,
+      standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
+      breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
+      autoCalculateOvertime: false,
+      fallbackHours: Number(extra.hours ?? stats.hours ?? 0) || 0,
+      fallbackWorkdays: extra.cong ?? stats.regularWorkdays
+    })
+    const hours = hasActualPunchPair ? metrics.hours : Number(extra.hours ?? stats.hours ?? 0) || 0
     const gioPlus = Number(extra.gioPlus ?? 0) || 0
     const timing = calculateAttendanceTiming({
       employee: sysEmp,
@@ -270,7 +289,11 @@ function AttendanceImportModal({
       checkOut: checkOutDate ? checkOutDate.toISOString() : null,
       vao: checkInStr,
       ra: checkOutStr,
-      cong: Number(extra.cong ?? (hours >= 8 ? 1 : hours > 0 ? 0.5 : 0)) || 0,
+      // Có punch thật thì luôn dùng phút thực tế; cong Excel cũ chỉ giữ cho
+      // các dòng mã công không có giờ vào/ra.
+      cong: Number(hasActualPunchPair
+        ? metrics.regularWorkdays
+        : (extra.cong ?? stats.regularWorkdays ?? (hours >= 8 ? 1 : hours > 0 ? 0.5 : 0))) || 0,
       hours,
       gio: hours,
       congPlus: Number(extra.congPlus ?? 0) || 0,
@@ -286,8 +309,15 @@ function AttendanceImportModal({
       tenCa: extra.shiftName || '',
       kyHieu: extra.kyHieu || stats.status || '',
       kyHieuPlus: extra.kyHieuPlus || '',
-      tongGio: Number(extra.tongGio ?? hours + gioPlus) || 0,
+      // Tổng giờ cũng dựa trên số giờ thực tế vừa tính, không lấy giá trị
+      // tổng đã làm tròn sẵn trong file nguồn.
+      tongGio: hours + gioPlus,
       status: extra.kyHieu || stats.status || '',
+      workedMinutes: metrics.workedMinutes,
+      regularMinutes: metrics.regularMinutes,
+      overtimeMinutes: metrics.overtimeMinutes,
+      overtimeAutoDisabled: true,
+      syntheticPunch: Boolean(extra.syntheticPunch),
       punches: stats.punches || []
     }
   }
@@ -595,9 +625,9 @@ function AttendanceImportModal({
           if (isHourMode) {
             const n = parseFloat(cellStr.replace(',', '.'))
             if (!isNaN(n)) {
-              hours = Number(n.toFixed(2))
-              // Quy tắc chuẩn: 8 giờ = 1 công, tối đa 1 công/ngày, không round từng ngày
-              cong = Math.min(hours / 8, 1)
+              hours = Number(n)
+              // Quy tắc chuẩn: 480 phút = 1 công, tối đa 1 công/ngày.
+              cong = Math.min(Math.max(0, hours * 60) / (Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES), 1)
               status = hours > 0 ? `${hours}h` : 'Nghỉ'
             }
           } else {
@@ -669,7 +699,8 @@ function AttendanceImportModal({
           hours: item.directHours,
           position: item.pos,
           sourceEmployeeCode: emp._sourceEmployeeCode || emp.employeeCode,
-          sourceEmployeeName: emp._sourceEmployeeName || emp.employeeName
+          sourceEmployeeName: emp._sourceEmployeeName || emp.employeeName,
+          syntheticPunch: true
         }))
         return
       }
@@ -1399,10 +1430,12 @@ function AttendanceImportModal({
                 nhan_su_id: log.employeeId,
                 ngay: String(log.date || '').slice(0, 10),
                 gia_tri_goc: rawGiaTri || null,
-                gio_vao: log.checkIn || null,
-                gio_ra: log.checkOut || null,
+                // cham_cong.gio_vao/gio_ra là TIME; không ghi ISO timestamp
+                // (sẽ bị PostgreSQL từ chối và làm mất cả lượt import).
+                gio_vao: log.vao || formatAttendanceTime(log.checkIn) || null,
+                gio_ra: log.ra || formatAttendanceTime(log.checkOut) || null,
                 ca_lam: log.shiftName || 'Ca ngày',
-                tang_ca: 0,
+                tang_ca: Number(log.tc1 || 0) + Number(log.tc2 || 0) + Number(log.tc3 || 0),
                 phep_su_dung: 0,
                 cong_lam_le: 0,
                 cong_le: 0,

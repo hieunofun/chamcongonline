@@ -98,6 +98,7 @@ const dayCode = day => {
 const dayNotes = day => {
   if (!day) return ''
   const notes = []
+  if (day.isHoliday) notes.push(day.holidayName ? `Ngày lễ: ${day.holidayName}` : 'Ngày lễ')
   if (day.late) notes.push(`Muộn ${day.lateMinutes || 0}p`)
   if (day.early) notes.push(`Sớm ${day.earlyMinutes || 0}p`)
   if (day.missingPunch) notes.push('Quên chấm')
@@ -218,6 +219,7 @@ function AttendancePreview() {
         let code = ''
         if (dayObj) {
           code = String(dayCode(dayObj) || (dayObj.workdays > 0 ? dayObj.workdays : '') || '')
+          if (!code && dayObj.isHoliday) code = 'Lễ'
         }
         dailyMap[dayStr] = code
         const num = parseFloat(code)
@@ -894,7 +896,7 @@ function AttendancePreview() {
             </table>
           </div>
         </section>
-        <section className="attendance-preview-legend"><strong>Chú thích:</strong><span>X: Nghỉ theo lịch/không phép theo trạng thái</span><span>P1: Nghỉ phép năm</span><span>1 / 0.5: Công trong ngày</span></section>
+        <section className="attendance-preview-legend"><strong>Chú thích:</strong><span>X: Nghỉ theo lịch/không phép theo trạng thái</span><span>P1: Nghỉ phép năm</span><span>1 / 0.5: Công trong ngày</span><span>Lễ: Ngày lễ cấu hình, không tự tính công</span></section>
       </>
     )}
     {isImportOpen && (
@@ -1073,10 +1075,12 @@ function AttendancePreview() {
                         {monthDaysHeader.map(d => {
                           const val = emp.dailyMap[d.dayStr] || ''
                           const isOff = val === '0' || d.isSunday
+                          const isHoliday = val === 'Lễ'
                           return (
                             <td
                               key={d.dayStr}
-                              className={`matrix-cell ${isOff ? 'is-off' : ''} ${val === '1' ? 'is-work' : ''}`}
+                              className={`matrix-cell ${isOff ? 'is-off' : ''} ${val === '1' ? 'is-work' : ''} ${isHoliday ? 'is-holiday' : ''}`}
+                              title={isHoliday ? 'Ngày lễ cấu hình — không tự tính công' : undefined}
                             >
                               {val}
                             </td>
@@ -1153,7 +1157,7 @@ function AttendancePreview() {
                             <td>{formatTimeHM(log.vao || log.checkIn) || '-'}</td>
                             <td>{formatTimeHM(log.ra || log.checkOut) || '-'}</td>
                             <td>{log.cong ?? '-'}</td>
-                            <td>{hours ? hours.toFixed(1) : '-'}</td>
+                           <td>{hours ? hours.toFixed(2) : '-'}</td>
                             <td>{log.congPlus ?? '-'}</td>
                             <td className={late > 0 ? 'is-late' : ''}>{late > 0 ? `${late}p` : '-'}</td>
                             <td className={early > 0 ? 'is-early' : ''}>{early > 0 ? `${early}p` : '-'}</td>
@@ -1163,7 +1167,7 @@ function AttendancePreview() {
                             <td>{log.profileShift || log.shiftName || log.tenCa || '-'}</td>
                             <td>{log.kyHieu || log.status || '-'}</td>
                             <td>{log.kyHieuPlus || '-'}</td>
-                            <td><strong>{tongGio ? tongGio.toFixed(1) : '-'}</strong></td>
+                           <td><strong>{tongGio ? tongGio.toFixed(2) : '-'}</strong></td>
                           </tr>
                         )
                       })

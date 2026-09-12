@@ -1,9 +1,16 @@
 import { buildSourceEmployeeKey } from './attendanceMatching.js'
 import {
   applyCalculatedAttendanceTiming,
+  attendanceTimeToMinutes,
   formatAttendanceTime,
   resolveAttendanceShift
 } from './attendanceShift.js'
+import {
+  calculateAttendanceMetrics,
+  getAttendanceHoliday,
+  roundDecimal,
+  STANDARD_WORK_MINUTES
+} from './attendanceCalculations.js'
 
 const numberValue = (value) => {
   const parsed = Number(value)
@@ -23,7 +30,7 @@ const hasNumericValue = (value) =>
   value !== undefined &&
   Number.isFinite(Number(value))
 
-export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings = {}) => {
+export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings = {}, date = '') => {
   let hours = 0
   let workdays = 0
   let extraWorkdays = 0
@@ -33,6 +40,8 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
   let earlyMinutes = 0
   let onlineWorkdays = 0
   let offlineWorkdays = 0
+  let sourceHours = 0
+  const actualPunches = []
   let hasSourceWorkday = false
   let hasPunch = false
   let missingPunch = false
@@ -47,23 +56,25 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
 
   logs.forEach(sourceLog => {
     const log = applyCalculatedAttendanceTiming(sourceLog, employee, attendanceSettings)
-    const logHours = numberValue(log.tongGio ?? (
+    const logHours = numberValue(log.hours ?? log.soGio ?? log.gio ?? log.tongGio ?? (
       numberValue(log.hours ?? log.soGio ?? log.gio) +
       numberValue(log.gioPlus)
     ))
-    hours += logHours
-    overtimeHours +=
-      numberValue(log.tc1) +
-      numberValue(log.tc2) +
-      numberValue(log.tc3)
-    lateMinutes += numberValue(log.lateMinutes ?? log.vaoTre)
-    earlyMinutes += numberValue(log.earlyMinutes ?? log.raSom)
+    sourceHours += Math.max(0, logHours)
     const logCheckIn = formatAttendanceTime(log.checkIn || log.vao)
     const logCheckOut = formatAttendanceTime(log.checkOut || log.ra)
     const hasCheckIn = Boolean(logCheckIn)
     const hasCheckOut = Boolean(logCheckOut)
-    if (hasCheckIn && (!checkIn || logCheckIn < checkIn)) checkIn = logCheckIn
-    if (hasCheckOut && (!checkOut || logCheckOut > checkOut)) checkOut = logCheckOut
+    const isSyntheticPunch = Boolean(log.syntheticPunch || log.isDerivedFromCode)
+    if (!isSyntheticPunch) {
+      lateMinutes += numberValue(log.lateMinutes ?? log.vaoTre)
+      earlyMinutes += numberValue(log.earlyMinutes ?? log.raSom)
+    }
+    if (!isSyntheticPunch && hasCheckIn && hasCheckOut) {
+      actualPunches.push({ checkIn: logCheckIn, checkOut: logCheckOut })
+    }
+    if (!isSyntheticPunch && hasCheckIn && (!checkIn || logCheckIn < checkIn)) checkIn = logCheckIn
+    if (!isSyntheticPunch && hasCheckOut && (!checkOut || logCheckOut > checkOut)) checkOut = logCheckOut
     if (!shiftName) shiftName = log.shiftName || log.tenCa || resolvedShift?.name || ''
     const status = String(log.kyHieu || log.status || '').trim().toUpperCase()
     const logWorkdays =
@@ -77,10 +88,10 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
       log.workMode || log.workLocation || log.hinhThucLamViec || ''
     ).toLowerCase()
 
-    hasPunch = hasPunch || hasCheckIn || hasCheckOut
+    hasPunch = hasPunch || (!isSyntheticPunch && (hasCheckIn || hasCheckOut))
     missingPunch =
       missingPunch ||
-      hasCheckIn !== hasCheckOut ||
+      (!isSyntheticPunch && hasCheckIn !== hasCheckOut) ||
       status === 'KR' ||
       status === 'KV'
     unapprovedAbsence =
@@ -100,7 +111,9 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
       offlineWorkdays += logWorkdays
     }
 
-    if (hasNumericValue(log.cong)) {
+    // Khi có Vào/Ra thật, Công phải được tính lại từ số phút; chỉ giữ cong
+    // nguồn cho dòng mã công không có cặp punch.
+    if (hasNumericValue(log.cong) && (!hasCheckIn || !hasCheckOut || isSyntheticPunch)) {
       workdays += numberValue(log.cong)
       hasSourceWorkday = true
     }
@@ -110,17 +123,72 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
     }
   })
 
-  if (!hasSourceWorkday) {
-    workdays = Math.min(hours / 8, 1)
+  const standardMinutes = Number(attendanceSettings.standardWorkMinutes) > 0
+    ? Number(attendanceSettings.standardWorkMinutes)
+    : STANDARD_WORK_MINUTES
+  const breakMinutes = Number(attendanceSettings.unpaidBreakMinutes) >= 0
+    ? Number(attendanceSettings.unpaidBreakMinutes)
+    : 0
+  const autoCalculateOvertime = attendanceSettings?.overtime?.autoCalculate !== false
+  if (actualPunches.length > 0) {
+    const firstPunch = actualPunches
+      .slice()
+      .sort((left, right) => (attendanceTimeToMinutes(left.checkIn) ?? 0) - (attendanceTimeToMinutes(right.checkIn) ?? 0))[0]
+    const lastPunch = actualPunches
+      .slice()
+      .sort((left, right) => (attendanceTimeToMinutes(right.checkOut) ?? 0) - (attendanceTimeToMinutes(left.checkOut) ?? 0))[0]
+    const metrics = calculateAttendanceMetrics({
+      log: {
+        ...(logs[0] || {}),
+        tc1: logs.reduce((sum, log) => sum + numberValue(log.tc1), 0),
+        tc2: logs.reduce((sum, log) => sum + numberValue(log.tc2), 0),
+        tc3: logs.reduce((sum, log) => sum + numberValue(log.tc3), 0),
+        overtimeAutoDisabled: logs.some(log => Boolean(log.overtimeAutoDisabled))
+      },
+      checkIn: firstPunch.checkIn,
+      checkOut: lastPunch.checkOut,
+      standardMinutes,
+      breakMinutes,
+      autoCalculateOvertime
+    })
+    hours = metrics.hours
+    workdays = metrics.regularWorkdays
+    overtimeHours = metrics.overtimeHours
+  } else if (!hasSourceWorkday) {
+    const metrics = calculateAttendanceMetrics({
+      log: logs[0] || {},
+      standardMinutes,
+      breakMinutes,
+      autoCalculateOvertime,
+      fallbackHours: sourceHours
+    })
+    hours = metrics.hours
+    workdays = metrics.regularWorkdays
+    overtimeHours = metrics.overtimeHours
+  } else {
+    hours = sourceHours
+    overtimeHours = logs.reduce((sum, log) => sum +
+      numberValue(log.tc1) + numberValue(log.tc2) + numberValue(log.tc3), 0)
   }
 
+  const holiday = getAttendanceHoliday(date, attendanceSettings)
+  const hoursExact = Math.max(0, hours)
+  const regularWorkdaysExact = Math.max(0, workdays)
+  const extraWorkdaysExact = Math.max(0, extraWorkdays)
+
   return {
-    hours: Math.round(hours * 100) / 100,
-    workdays: workdays + extraWorkdays,
-    regularWorkdays: workdays,
-    extraWorkdays: extraWorkdays,
-    overtimeHours: Math.round(overtimeHours * 100) / 100,
-    paidLeaveWorkdays: Math.round(paidLeaveWorkdays * 100) / 100,
+    hoursExact,
+    workdaysExact: regularWorkdaysExact + extraWorkdaysExact,
+    regularWorkdaysExact,
+    extraWorkdaysExact,
+    workedMinutes: Math.max(0, hoursExact * 60),
+    regularMinutes: Math.min(Math.max(0, hoursExact * 60), standardMinutes),
+    hours: roundDecimal(hoursExact),
+    workdays: roundDecimal(regularWorkdaysExact + extraWorkdaysExact),
+    regularWorkdays: roundDecimal(regularWorkdaysExact),
+    extraWorkdays: roundDecimal(extraWorkdaysExact),
+    overtimeHours: roundDecimal(Math.max(0, overtimeHours)),
+    paidLeaveWorkdays: roundDecimal(paidLeaveWorkdays),
     lateMinutes,
     earlyMinutes,
     late: lateMinutes > 0,
@@ -135,6 +203,9 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
     standardCheckIn,
     standardCheckOut,
     shiftName: shiftName || resolvedShift?.name || '',
+    isHoliday: Boolean(holiday),
+    holidayName: holiday?.name || '',
+    holidayWorkdays: holiday ? roundDecimal(regularWorkdaysExact + extraWorkdaysExact) : 0,
     logs
   }
 }
@@ -166,13 +237,31 @@ export const buildDailyAttendanceMap = (
     grouped.get(key).push(log)
   })
 
+  // Ngày lễ đã cấu hình phải xuất hiện trên ma trận kể cả khi nhân viên
+  // không có bản ghi chấm công. Các day summary rỗng này chỉ mang metadata
+  // hiển thị, không tự cộng Công/Giờ/Tăng ca.
+  const holidayDates = Array.from(new Set(
+    (attendanceSettings.holidays || [])
+      .map(item => typeof item === 'string' ? item.slice(0, 10) : String(item?.date || item?.day || '').slice(0, 10))
+      .filter(date => /^\d{4}-\d{2}-\d{2}$/.test(date) && (!month || date.startsWith(month)))
+  ))
+  employees.forEach(employee => {
+    const employeeId = String(employee?.id || '')
+    if (!employeeId) return
+    holidayDates.forEach(date => {
+      const key = `${employeeId}::${date}`
+      if (!grouped.has(key)) grouped.set(key, [])
+    })
+  })
+
   return new Map(
     Array.from(grouped.entries()).map(([key, logs]) => [
       key,
       summarizeAttendanceDay(
         logs,
-        employeesById.get(String(logs[0]?.employeeId || '')) || {},
-        attendanceSettings
+        employeesById.get(String(logs[0]?.employeeId || key.slice(0, key.lastIndexOf('::')))) || {},
+        attendanceSettings,
+        key.slice(key.lastIndexOf('::') + 2)
       )
     ])
   )
@@ -300,6 +389,25 @@ export const buildAttendanceSummary = ({
     row.days.set(date, daySummary)
   })
 
+  // Bao phủ cả log của nhân viên ngoài danh sách hồ sơ (nếu có) để holiday
+  // vẫn được ghi nhận trong snapshot; nhân viên có hồ sơ đã được xử lý ở
+  // buildDailyAttendanceMap.
+  const holidayDates = Array.from(new Set(
+    (attendanceSettings.holidays || [])
+      .map(item => typeof item === 'string' ? item.slice(0, 10) : String(item?.date || item?.day || '').slice(0, 10))
+      .filter(date => /^\d{4}-\d{2}-\d{2}$/.test(date) && date.startsWith(month))
+  ))
+  if (holidayDates.length > 0) {
+    summaryByEmployee.forEach(row => {
+      const employee = employeesById.get(String(row.employeeId)) || {}
+      holidayDates.forEach(date => {
+        if (!row.days.has(date)) {
+          row.days.set(date, summarizeAttendanceDay([], employee, attendanceSettings, date))
+        }
+      })
+    })
+  }
+
   const adjustedEmployeeIds = new Set([
     ...Object.keys(attendanceAdjustments || {}),
     ...Object.keys(manualWorkdays || {})
@@ -333,13 +441,23 @@ export const buildAttendanceSummary = ({
 
     permissionDays.forEach(day => {
       const date = `${month}-${String(day).padStart(2, '0')}`
-      const current = row.days.get(date) || summarizeAttendanceDay([])
+      const current = row.days.get(date) || summarizeAttendanceDay(
+        [],
+        employee || {},
+        attendanceSettings,
+        date
+      )
       const paidLeaveWorkdays = numberValue(
         manualWorkdays[row.employeeId]?.[day] ?? 1
       )
       row.days.set(date, {
         ...current,
         workdays: paidLeaveWorkdays,
+        workdaysExact: paidLeaveWorkdays,
+        regularWorkdays: paidLeaveWorkdays,
+        regularWorkdaysExact: paidLeaveWorkdays,
+        extraWorkdays: 0,
+        extraWorkdaysExact: 0,
         paidLeaveWorkdays,
         unapprovedAbsence: false
       })
@@ -347,7 +465,8 @@ export const buildAttendanceSummary = ({
 
     row.days.forEach((day, date) => {
       const paidLeaveWorkdays = numberValue(day.paidLeaveWorkdays)
-      const actualWorkdays = Math.max(0, day.workdays - paidLeaveWorkdays)
+      const dayWorkdays = numberValue(day.workdaysExact ?? day.workdays)
+      const actualWorkdays = Math.max(0, dayWorkdays - paidLeaveWorkdays)
       const officialDate = String(row.officialDate || '').slice(0, 10)
       const isProbation = officialDate
         ? date < officialDate
@@ -358,10 +477,10 @@ export const buildAttendanceSummary = ({
         numberValue(day.offlineWorkdays)
       )
 
-      row.workdays += day.workdays
-      row.totalHours += day.hours
+      row.workdays += day.workdaysExact ?? day.workdays
+      row.totalHours += day.hoursExact ?? day.hours
       row.overtimeHours += day.overtimeHours
-      row.attendanceDays += day.hasPunch || day.workdays > 0 ? 1 : 0
+      row.attendanceDays += day.hasPunch || dayWorkdays > 0 ? 1 : 0
       row.lateCount += day.late ? 1 : 0
       row.lateUnder30Count += day.late && day.lateMinutes < 30 ? 1 : 0
       row.lateOver30Count += day.late && day.lateMinutes >= 30 ? 1 : 0
@@ -416,6 +535,12 @@ export const serializeAttendanceSummaryRows = (rows = []) =>
       Array.from(row.days?.entries?.() || []).map(([date, day]) => [
         date,
         {
+          hoursExact: day.hoursExact ?? day.hours,
+          workdaysExact: day.workdaysExact ?? day.workdays,
+          regularWorkdaysExact: day.regularWorkdaysExact ?? day.regularWorkdays,
+          extraWorkdaysExact: day.extraWorkdaysExact ?? day.extraWorkdays,
+          workedMinutes: day.workedMinutes,
+          regularMinutes: day.regularMinutes,
           hours: day.hours,
           workdays: day.workdays,
           regularWorkdays: day.regularWorkdays,
@@ -436,6 +561,9 @@ export const serializeAttendanceSummaryRows = (rows = []) =>
           standardCheckIn: day.standardCheckIn || '',
           standardCheckOut: day.standardCheckOut || '',
           shiftName: day.shiftName || '',
+          isHoliday: Boolean(day.isHoliday),
+          holidayName: day.holidayName || '',
+          holidayWorkdays: day.holidayWorkdays || 0,
           logs: slimDayLogs(day.logs)
         }
       ])

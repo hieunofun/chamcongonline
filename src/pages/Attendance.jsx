@@ -2203,6 +2203,7 @@ function Attendance() {
                             if (daySummary) {
                               val = Number(daySummary.workdays) || 0
                               cellContent = val.toFixed(2).replace(/\.?0+$/, '')
+                              if (daySummary.isHoliday && val === 0) cellContent = 'Lễ'
                               cellClass =
                                 val >= 1
                                   ? 'text-success'
@@ -2255,9 +2256,14 @@ function Attendance() {
                                 style={{
                                   textAlign: 'center',
                                   border: '1px solid #dee2e6',
-                                  background: permissionDays.includes(day) ? '#d4edda' : 'inherit', // Green background
+                                  background: permissionDays.includes(day)
+                                    ? '#d4edda'
+                                    : daySummary?.isHoliday ? '#fff3cd' : 'inherit',
                                   padding: permissionDays.includes(day) ? '4px' : '8px' // Adjust padding for input
                                 }}
+                                title={daySummary?.isHoliday
+                                  ? `Ngày lễ${daySummary.holidayName ? `: ${daySummary.holidayName}` : ''} — không tự tính công`
+                                  : undefined}
                               >
                                 {cellContent}
                               </td>
@@ -2274,7 +2280,7 @@ function Attendance() {
             )}
           </div>
           <div style={{ padding: '10px', fontSize: '0.85rem' }}>
-            <strong>Chú thích:</strong> <span style={{ display: 'inline-block', width: '15px', height: '15px', background: '#d4edda', border: '1px solid #c3e6cb', verticalAlign: 'middle', marginRight: '5px' }}></span> Có phép (Được tính đủ công)
+            <strong>Chú thích:</strong> <span style={{ display: 'inline-block', width: '15px', height: '15px', background: '#d4edda', border: '1px solid #c3e6cb', verticalAlign: 'middle', marginRight: '5px' }}></span> Có phép (Được tính đủ công) <span style={{ display: 'inline-block', width: '15px', height: '15px', background: '#fff3cd', border: '1px solid #ffe69c', verticalAlign: 'middle', margin: '0 5px 0 14px' }}></span> Lễ (không tự tính công)
           </div>
         </div>
       )}
@@ -2389,7 +2395,7 @@ function Attendance() {
                           <td>{checkIn}</td>
                           <td>{checkOut}</td>
                           <td>{log.cong ?? '-'}</td>
-                          <td>{hours ? hours.toFixed(1) : '-'}</td>
+                          <td>{hours ? hours.toFixed(2) : '-'}</td>
                           <td>{log.congPlus ?? '-'}</td>
                           <td>{gioPlus || '-'}</td>
                           <td style={{ color: late > 0 ? '#dc3545' : '#6c757d' }}>{late > 0 ? `${late}p` : '-'}</td>
@@ -2400,7 +2406,7 @@ function Attendance() {
                           <td>{log.shiftName || log.tenCa || '-'}</td>
                           <td>{log.kyHieu || log.status || '-'}</td>
                           <td>{log.kyHieuPlus || '-'}</td>
-                          <td><strong>{tongGio ? tongGio.toFixed(1) : '-'}</strong></td>
+                          <td><strong>{tongGio ? tongGio.toFixed(2) : '-'}</strong></td>
                           <td>
                             <div className="actions">
                               <button

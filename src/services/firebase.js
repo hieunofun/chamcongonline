@@ -176,6 +176,7 @@ async function listEmployeesAsFirebaseMap() {
 
   const out = {}
   data.forEach((ns) => {
+    const employmentStatus = String(ns.trang_thai ?? '').trim()
     out[ns.id] = {
       id: ns.id,
       employeeId: ns.ma_nhan_vien || '',
@@ -195,8 +196,10 @@ async function listEmployeesAsFirebaseMap() {
       bo_phan: ns.bo_phan || '',
       shift: ns.ca_lam || 'Ca ngày',
       ca_lam_viec: ns.ca_lam || 'Ca ngày',
-      status: ns.trang_thai || 'Đang làm việc',
-      trang_thai: ns.trang_thai || 'Đang làm việc',
+      // Trạng thái do HR đánh dấu; dữ liệu rỗng phải giữ rỗng, không suy diễn
+      // thành "Đang làm việc" hay "Chính thức".
+      status: employmentStatus,
+      trang_thai: employmentStatus,
       joinDate: ns.ngay_vao_lam || '',
       ngay_vao_lam: ns.ngay_vao_lam || '',
       avatarDataUrl: ns.avatar_url || ''
@@ -250,6 +253,7 @@ export const fbGet = async (path) => {
         .maybeSingle()
       if (error) throw error
       if (!data) return null
+      const employmentStatus = String(data.trang_thai ?? '').trim()
       return {
         id: data.id,
         employeeId: data.ma_nhan_vien || '',
@@ -259,7 +263,8 @@ export const fbGet = async (path) => {
         position: data.chuc_vu || '',
         department: data.bo_phan || '',
         shift: data.ca_lam || 'Ca ngày',
-        status: data.trang_thai || 'Đang làm việc'
+        status: employmentStatus,
+        trang_thai: employmentStatus
       }
     }
     return listEmployeesAsFirebaseMap()

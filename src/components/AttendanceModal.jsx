@@ -5,6 +5,11 @@ import {
   calculateAttendanceTiming,
   formatAttendanceTime
 } from '../utils/attendanceShift'
+import {
+  calculateAttendanceMetrics,
+  roundDecimal,
+  STANDARD_WORK_MINUTES
+} from '../utils/attendanceCalculations'
 
 const DAY_NAMES = ['Chủ nhật', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7']
 
@@ -110,14 +115,13 @@ function AttendanceModal({
   }
 
   const calculateHours = (checkIn, checkOut) => {
-    if (!checkIn || !checkOut) return 0
-    const [h1, m1] = checkIn.split(':').map(Number)
-    const [h2, m2] = checkOut.split(':').map(Number)
-    const start = h1 + m1 / 60
-    const end = h2 + m2 / 60
-    let diff = end - start
-    if (start <= 12 && end >= 13.5) diff -= 1.5
-    return Math.max(0, Math.round(diff * 10) / 10)
+    return calculateAttendanceMetrics({
+      checkIn,
+      checkOut,
+      standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
+      breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
+      autoCalculateOvertime: false
+    }).hours
   }
 
   const pickEmployee = (emp) => {
@@ -158,7 +162,15 @@ function AttendanceModal({
     if (name === 'checkIn' || name === 'checkOut' || name === 'shiftName') {
       const hours = calculateHours(updated.checkIn, updated.checkOut)
       updated.hours = hours
-      updated.tongGio = Math.round((hours + Number(updated.gioPlus || 0)) * 10) / 10
+      const metrics = calculateAttendanceMetrics({
+        checkIn: updated.checkIn,
+        checkOut: updated.checkOut,
+        standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
+        breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
+        autoCalculateOvertime: false
+      })
+      updated.cong = roundDecimal(metrics.regularWorkdays)
+      updated.tongGio = roundDecimal(hours + Number(updated.gioPlus || 0))
       if (hours >= 8) updated.status = 'Đủ'
       else if (hours > 0) updated.status = 'Thiếu'
       else updated.status = 'Vắng'
@@ -176,7 +188,7 @@ function AttendanceModal({
     }
 
     if (name === 'hours' || name === 'gioPlus') {
-      updated.tongGio = Math.round((Number(updated.hours || 0) + Number(updated.gioPlus || 0)) * 10) / 10
+      updated.tongGio = roundDecimal(Number(updated.hours || 0) + Number(updated.gioPlus || 0))
     }
 
     setFormData(updated)
@@ -200,8 +212,22 @@ function AttendanceModal({
         checkOutDate = new Date(baseDate)
         checkOutDate.setHours(Number(h), Number(m), 0, 0)
       }
+      if (checkInDate && checkOutDate && checkOutDate < checkInDate) {
+        checkOutDate.setDate(checkOutDate.getDate() + 1)
+      }
 
-      const hours = parseFloat(formData.hours) || 0
+      const calculatedMetrics = calculateAttendanceMetrics({
+        log: formData,
+        checkIn: formData.checkIn,
+        checkOut: formData.checkOut,
+        standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
+        breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
+        autoCalculateOvertime: false,
+        fallbackHours: parseFloat(formData.hours) || 0,
+        fallbackWorkdays: parseFloat(formData.cong) || 0
+      })
+      const hasPunchPair = Boolean(formData.checkIn && formData.checkOut)
+      const hours = hasPunchPair ? calculatedMetrics.hours : parseFloat(formData.hours) || 0
       const gioPlus = parseFloat(formData.gioPlus) || 0
       const employee = employees.find(item => item.id === formData.employeeId) || {}
       const timing = calculateAttendanceTiming({
@@ -226,7 +252,7 @@ function AttendanceModal({
         checkOut: checkOutDate ? checkOutDate.toISOString() : null,
         vao: formData.checkIn || '',
         ra: formData.checkOut || '',
-        cong: parseFloat(formData.cong) || 0,
+        cong: hasPunchPair ? roundDecimal(calculatedMetrics.regularWorkdays) : parseFloat(formData.cong) || 0,
         hours,
         gio: hours,
         congPlus: parseFloat(formData.congPlus) || 0,
@@ -242,7 +268,7 @@ function AttendanceModal({
         tenCa: formData.shiftName || timing.shift.name,
         kyHieu: formData.kyHieu || formData.status || '',
         kyHieuPlus: formData.kyHieuPlus || '',
-        tongGio: parseFloat(formData.tongGio) || hours + gioPlus,
+        tongGio: roundDecimal(hours + gioPlus),
         status: formData.status || formData.kyHieu || ''
       }
 

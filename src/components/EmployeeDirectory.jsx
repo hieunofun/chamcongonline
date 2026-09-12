@@ -1,14 +1,14 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { formatDateDisplay } from '../utils/helpers'
+import { formatDateDisplay, getEmployeeEmploymentStatus } from '../utils/helpers'
 
 const EmployeeModal = lazy(() => import('./EmployeeModal'))
 const StatusHistoryView = lazy(() => import('./StatusHistoryView'))
 
 const getName = (employee) => employee.ho_va_ten || employee.name || employee.Tên || 'Chưa cập nhật'
-const getTinhTrang = (employee) => String(employee?.tinh_trang || employee?.status || '').trim()
+const getTinhTrang = (employee) => getEmployeeEmploymentStatus(employee)
 const getShift = (employee) => String(employee?.ca_lam_viec || employee?.shift || '').trim()
 const isResigned = (employee) =>
-    String(employee?.trang_thai || '').trim() === 'Nghỉ việc' || getTinhTrang(employee) === 'Nghỉ việc'
+    getTinhTrang(employee) === 'Nghỉ việc'
 
 function EmployeeDirectory({
     employees, filteredEmployees, activeTab, setActiveTab, searchTerm, setSearchTerm,

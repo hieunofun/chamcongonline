@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../services/supabase'
 
-function StatusHistoryView({ employees, onDataChange }) {
+function StatusHistoryView({ companyId, employees, onDataChange }) {
     const [logs, setLogs] = useState([])
     const [loading, setLoading] = useState(true)
     const [fromDate, setFromDate] = useState('')
@@ -19,6 +19,7 @@ function StatusHistoryView({ employees, onDataChange }) {
             const { data, error } = await supabase
                 .from('employee_status_history')
                 .select('*')
+                .eq('company_id', companyId)
                 .order('created_at', { ascending: false })
 
             if (error) throw error

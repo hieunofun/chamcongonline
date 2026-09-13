@@ -11,7 +11,7 @@ const isResigned = (employee) =>
     getTinhTrang(employee) === 'Nghỉ việc'
 
 function EmployeeDirectory({
-    employees, filteredEmployees, activeTab, setActiveTab, searchTerm, setSearchTerm,
+    companyId, employees, filteredEmployees, activeTab, setActiveTab, searchTerm, setSearchTerm,
     filterBranch, setFilterBranch,
     filterDept, setFilterDept, filterStatus, setFilterStatus, filterContract, setFilterContract,
     filterShift = '', setFilterShift,
@@ -118,7 +118,7 @@ function EmployeeDirectory({
 
             {activeTab === 'history' ? (
                 <Suspense fallback={<div className="loadingState">Đang tải lịch sử...</div>}>
-                    <StatusHistoryView employees={employees} onDataChange={onReload} />
+                    <StatusHistoryView companyId={companyId} employees={employees} onDataChange={onReload} />
                 </Suspense>
             ) : <>
                 <section className="employees-filter-card">
@@ -220,7 +220,7 @@ function EmployeeDirectory({
 
             {isModalOpen && (
                 <Suspense fallback={null}>
-                    <EmployeeModal employee={selectedEmployee} isOpen={isModalOpen} onClose={() => { setIsModalOpen(false); setSelectedEmployee(null); setIsReadOnly(false) }} onSave={onReload} readOnly={isReadOnly} departmentOptions={departments} positionOptions={[...new Set(activeEmployees.map(e => e.vi_tri).filter(Boolean))]} />
+                    <EmployeeModal companyId={companyId} employee={selectedEmployee} isOpen={isModalOpen} onClose={() => { setIsModalOpen(false); setSelectedEmployee(null); setIsReadOnly(false) }} onSave={onReload} readOnly={isReadOnly} departmentOptions={departments} positionOptions={[...new Set(activeEmployees.map(e => e.vi_tri).filter(Boolean))]} />
                 </Suspense>
             )}
         </div>

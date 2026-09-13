@@ -11,27 +11,17 @@ const genId = () =>
   `-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 11)}`
 
 const rowId = (collection, id) => `${collection}::${id}`
+const requireCompanyId = companyId => {
+  const value = String(companyId || '').trim()
+  if (!value) throw new Error('Thiếu company_id khi truy cập dữ liệu nhân sự.')
+  return value
+}
 const scopedRowPrefix = (collection, companyId) =>
-  companyId ? `${String(companyId)}::${collection}::` : `${collection}::`
+  `${requireCompanyId(companyId)}::${collection}::`
 const scopedRowId = (collection, id, companyId) =>
   `${scopedRowPrefix(collection, companyId)}${id}`
-const canReadLegacyCompanyRecords = companyId =>
-  !companyId || String(companyId) === String(DEFAULT_COMPANY_ID)
-const companyRecordPrefixes = (collection, companyId) => {
-  const prefixes = []
-  if (canReadLegacyCompanyRecords(companyId)) prefixes.push(`${collection}::`)
-  if (companyId) prefixes.push(scopedRowPrefix(collection, companyId))
-  return [...new Set(prefixes)]
-}
-const rowsForCompany = (rows, collection, companyId) => {
-  const legacyRows = canReadLegacyCompanyRecords(companyId)
-    ? rows.filter(row => row.id.startsWith(`${collection}::`))
-    : []
-  const scopedRows = companyId
-    ? rows.filter(row => row.id.startsWith(scopedRowPrefix(collection, companyId)))
-    : []
-  return [...legacyRows, ...scopedRows]
-}
+const isScopedRecord = (row, collection, companyId) =>
+  row.id.startsWith(scopedRowPrefix(collection, companyId))
 const logicalRecordId = (id, collection, companyId) => {
   const selectedPrefix = scopedRowPrefix(collection, companyId)
   if (companyId && id.startsWith(selectedPrefix)) return id.slice(selectedPrefix.length)
@@ -90,78 +80,72 @@ function parsePath(path) {
 
 async function readCollectionRows(collection, companyId) {
   // Supabase/PostgREST mặc định max 1000 dòng/request — phải phân trang + order ổn định.
+  const tenantId = requireCompanyId(companyId)
   const pageSize = 1000
   const rows = []
 
-  for (const prefix of companyRecordPrefixes(collection, companyId)) {
-    let expectedCount = null
-    let fetchedCount = 0
-    for (let from = 0; ; from += pageSize) {
-      const { data, error, count } = await supabase
-        .from('hr_records')
-        .select('id, data', from === 0 ? { count: 'exact' } : undefined)
-        .eq('collection', collection)
-        .like('id', `${prefix}%`)
-        .order('id', { ascending: true })
-        .range(from, from + pageSize - 1)
+  let expectedCount = null
+  let fetchedCount = 0
+  for (let from = 0; ; from += pageSize) {
+    const { data, error, count } = await supabase
+      .from('hr_records')
+      .select('id, data', from === 0 ? { count: 'exact' } : undefined)
+      .eq('company_id', tenantId)
+      .eq('collection', collection)
+      .order('id', { ascending: true })
+      .range(from, from + pageSize - 1)
 
-      if (error) throw error
-      if (from === 0 && typeof count === 'number') expectedCount = count
-      fetchedCount += data?.length || 0
-      rows.push(...(data || []))
-      if (!data || data.length < pageSize) break
-    }
-    if (typeof expectedCount === 'number' && fetchedCount < expectedCount) {
-      console.warn(
-        `[listCollection:${collection}] thiếu dữ liệu: lấy ${fetchedCount}/${expectedCount}`
-      )
-    }
+    if (error) throw error
+    if (from === 0 && typeof count === 'number') expectedCount = count
+    fetchedCount += data?.length || 0
+    rows.push(...(data || []))
+    if (!data || data.length < pageSize) break
+  }
+  if (typeof expectedCount === 'number' && fetchedCount < expectedCount) {
+    console.warn(
+      `[listCollection:${collection}] thiếu dữ liệu: lấy ${fetchedCount}/${expectedCount}`
+    )
   }
 
-  return rows
+  return rows.sort((left, right) =>
+    Number(isScopedRecord(left, collection, tenantId)) -
+    Number(isScopedRecord(right, collection, tenantId))
+  )
 }
 
 async function listCollection(collection, companyId) {
-  const rows = rowsForCompany(await readCollectionRows(collection, companyId), collection, companyId)
+  const rows = await readCollectionRows(collection, companyId)
   const out = {}
   rows.forEach(row => { out[logicalRecordId(row.id, collection, companyId)] = row.data || {} })
   return Object.keys(out).length ? out : null
 }
 
-async function getRecordById(id) {
+async function getRecordRow(collection, id, companyId) {
+  const tenantId = requireCompanyId(companyId)
+  const scopedId = scopedRowId(collection, id, tenantId)
+  const legacyId = rowId(collection, id)
   const { data, error } = await supabase
     .from('hr_records')
-    .select('data')
-    .eq('id', id)
-    .maybeSingle()
+    .select('id, data')
+    .eq('collection', collection)
+    .eq('company_id', tenantId)
+    .in('id', [...new Set([scopedId, legacyId])])
+    .limit(2)
 
   if (error) throw error
-  return data?.data ?? null
+  return (data || []).find(row => row.id === scopedId) || data?.[0] || null
 }
 
 async function getRecord(collection, id, companyId) {
-  if (companyId) {
-    const scoped = await getRecordById(scopedRowId(collection, id, companyId))
-    if (scoped !== null) return scoped
-  }
-  if (canReadLegacyCompanyRecords(companyId)) {
-    return getRecordById(rowId(collection, id))
-  }
-  return null
+  const row = await getRecordRow(collection, id, companyId)
+  return row?.data ?? null
 }
 
 async function listManualWorkdaysByMonth(month, companyId) {
   const out = { ...((await getRecord('manualWorkdays', month, companyId)) || {}) }
-  const rows = rowsForCompany(
-    await readCollectionRows('manualWorkdays', companyId),
-    'manualWorkdays',
-    companyId
-  )
+  const rows = await readCollectionRows('manualWorkdays', companyId)
   rows.forEach(row => {
-    const recordPrefix = scopedRowPrefix('manualWorkdays', companyId)
-    const legacyPrefix = 'manualWorkdays::'
-    const idPrefix = row.id.startsWith(recordPrefix) ? recordPrefix : legacyPrefix
-    const logicalId = row.id.slice(idPrefix.length)
+    const logicalId = logicalRecordId(row.id, 'manualWorkdays', companyId)
     const monthPrefix = `${month}__`
     if (!logicalId.startsWith(monthPrefix)) return
     const employeeId = logicalId.slice(monthPrefix.length)
@@ -170,11 +154,13 @@ async function listManualWorkdaysByMonth(month, companyId) {
   return Object.keys(out).length ? out : null
 }
 
-async function upsertRecord(collection, id, data, companyId) {
+async function upsertRecord(collection, physicalId, data, companyId) {
+  const tenantId = requireCompanyId(companyId)
   const { error } = await supabase.from('hr_records').upsert(
     {
-      id: scopedRowId(collection, id, companyId),
+      id: physicalId,
       collection,
+      company_id: tenantId,
       data,
       updated_at: new Date().toISOString()
     },
@@ -183,33 +169,53 @@ async function upsertRecord(collection, id, data, companyId) {
   if (error) throw error
 }
 
+async function setRecord(collection, id, data, companyId) {
+  const existing = await getRecordRow(collection, id, companyId)
+  await upsertRecord(
+    collection,
+    existing?.id || scopedRowId(collection, id, companyId),
+    data,
+    companyId
+  )
+}
+
 async function patchRecord(collection, id, patch, companyId) {
-  const current = (await getRecord(collection, id, companyId)) || {}
-  const next = { ...current, ...(patch || {}) }
-  await upsertRecord(collection, id, next, companyId)
+  const existing = await getRecordRow(collection, id, companyId)
+  const next = { ...(existing?.data || {}), ...(patch || {}) }
+  await upsertRecord(
+    collection,
+    existing?.id || scopedRowId(collection, id, companyId),
+    next,
+    companyId
+  )
   return next
 }
 
 async function deleteRecord(collection, id, companyId) {
-  const ids = [scopedRowId(collection, id, companyId)]
-  if (canReadLegacyCompanyRecords(companyId) && companyId) ids.push(rowId(collection, id))
+  const tenantId = requireCompanyId(companyId)
+  const ids = [scopedRowId(collection, id, tenantId), rowId(collection, id)]
   for (const idValue of [...new Set(ids)]) {
     const { error } = await supabase
       .from('hr_records')
       .delete()
       .eq('id', idValue)
+      .eq('company_id', tenantId)
+      .eq('collection', collection)
     if (error) throw error
   }
 }
 
 async function deleteCollection(collection, companyId) {
-  const rows = rowsForCompany(await readCollectionRows(collection, companyId), collection, companyId)
+  const tenantId = requireCompanyId(companyId)
+  const rows = await readCollectionRows(collection, tenantId)
   const ids = rows.map(row => row.id)
   for (let index = 0; index < ids.length; index += 500) {
     const { error } = await supabase
       .from('hr_records')
       .delete()
       .in('id', ids.slice(index, index + 500))
+      .eq('company_id', tenantId)
+      .eq('collection', collection)
     if (error) throw error
   }
 }
@@ -217,8 +223,8 @@ async function deleteCollection(collection, companyId) {
 async function listEmployeesAsFirebaseMap(companyId) {
   // YÊU CẦU: Bảng công chỉ được lấy nhân sự từ bảng nhan_su.
   // Không được join hoặc đưa các tài khoản hệ thống từ bảng users vào bảng công.
-  let query = supabase.from('nhan_su').select('*')
-  if (companyId) query = query.eq('company_id', companyId)
+  const tenantId = requireCompanyId(companyId)
+  const query = supabase.from('nhan_su').select('*').eq('company_id', tenantId)
   const { data, error } = await query.order('ma_nhan_vien', { ascending: true })
 
   if (error) throw error
@@ -258,9 +264,10 @@ async function listEmployeesAsFirebaseMap(companyId) {
   return out
 }
 
-export const fbGetEmployeesDirectory = (companyId) => listEmployeesAsFirebaseMap(companyId)
+export const fbGetEmployeesDirectory = (companyId = DEFAULT_COMPANY_ID) => listEmployeesAsFirebaseMap(companyId)
 
-async function pushEmployee(payload) {
+async function pushEmployee(payload, companyId = DEFAULT_COMPANY_ID) {
+  const tenantId = requireCompanyId(companyId)
   const id = crypto.randomUUID()
   const dbPayload = mapAppToUser(payload || {}) || {}
   dbPayload.id = id
@@ -269,6 +276,7 @@ async function pushEmployee(payload) {
     dbPayload.employee_id = payload.employeeId
   }
   if (!dbPayload.role) dbPayload.role = payload?.role || 'user'
+  dbPayload.company_id = tenantId
 
   const { error } = await supabase.from('users').insert([dbPayload])
   if (error) throw error
@@ -276,12 +284,11 @@ async function pushEmployee(payload) {
 }
 
 async function getHrRoot(companyId) {
-  let query = supabase
+  const tenantId = requireCompanyId(companyId)
+  const query = supabase
     .from('hr_records')
     .select('id, collection, data')
-  if (companyId && !canReadLegacyCompanyRecords(companyId)) {
-    query = query.like('id', `${String(companyId)}::%`)
-  }
+    .eq('company_id', tenantId)
   const { data, error } = await query
   if (error) throw error
 
@@ -293,7 +300,6 @@ async function getHrRoot(companyId) {
   })
   ;applicableRows.forEach((row) => {
     const collection = row.collection
-    if (!rowsForCompany([row], collection, companyId).length) return
     const logicalId = logicalRecordId(row.id, collection, companyId)
     if (!root[collection]) root[collection] = {}
     root[collection][logicalId] = row.data || {}
@@ -301,13 +307,14 @@ async function getHrRoot(companyId) {
   return Object.keys(root).length ? root : null
 }
 
-export const fbGet = async (path, companyId) => {
+export const fbGet = async (path, companyId = DEFAULT_COMPANY_ID) => {
   const parsed = parsePath(path)
 
   if (parsed.kind === 'employees') {
     if (parsed.id) {
-      let query = supabase.from('nhan_su').select('*').eq('id', parsed.id)
-      if (companyId) query = query.eq('company_id', companyId)
+      const query = supabase.from('nhan_su').select('*')
+        .eq('id', parsed.id)
+        .eq('company_id', requireCompanyId(companyId))
       const { data, error } = await query.maybeSingle()
       if (error) throw error
       if (!data) return null
@@ -345,23 +352,27 @@ export const fbGet = async (path, companyId) => {
   return null
 }
 
-export const fbGetAttendanceByEmployee = async (employeeId, companyId) => {
+export const fbGetAttendanceByEmployee = async (employeeId, companyId = DEFAULT_COMPANY_ID) => {
   const ownerId = String(employeeId || '').trim()
   if (!ownerId) return null
+  const tenantId = requireCompanyId(companyId)
   const rows = []
-  for (const prefix of companyRecordPrefixes('attendanceLogs', companyId)) {
+  const pageSize = 1000
+  for (let from = 0; ; from += pageSize) {
     const { data, error } = await supabase
       .from('hr_records')
       .select('id, data')
+      .eq('company_id', tenantId)
       .eq('collection', 'attendanceLogs')
-      .like('id', `${prefix}%`)
       .contains('data', { employeeId: ownerId })
       .order('id')
+      .range(from, from + pageSize - 1)
     if (error) throw error
     rows.push(...(data || []))
+    if (!data || data.length < pageSize) break
   }
   const out = {}
-  rowsForCompany(rows, 'attendanceLogs', companyId).forEach(row => {
+  rows.forEach(row => {
     out[logicalRecordId(row.id, 'attendanceLogs', companyId)] = row.data || {}
   })
   return Object.keys(out).length ? out : null
@@ -369,22 +380,55 @@ export const fbGetAttendanceByEmployee = async (employeeId, companyId) => {
 
 /**
  * Load attendance logs for one YYYY-MM (filters by data.date prefix).
- * Ưu tiên đọc từ bảng cham_cong chính thức của công ty hiện tại.
+ * Ưu tiên log Excel/online trong hr_records; dùng cham_cong làm fallback
+ * cho dữ liệu cũ chưa có log mềm.
  */
-export const fbGetAttendanceLogsByMonth = async (month, companyId) => {
+export const fbGetAttendanceLogsByMonth = async (month, companyId = DEFAULT_COMPANY_ID) => {
   const period = String(month || '').trim()
   if (!/^\d{4}-\d{2}$/.test(period)) return null
+  const tenantId = requireCompanyId(companyId)
   const [year, monthNumber] = period.split('-').map(Number)
   const lastDay = String(new Date(year, monthNumber, 0).getDate()).padStart(2, '0')
 
-  // 1. Đọc từ bảng cham_cong chính thức liên kết với nhan_su
+  // Ưu tiên log Excel/online trong hr_records. Bảng cham_cong có thể chỉ
+  // chứa các dòng cũ thiếu giờ; nếu thấy dữ liệu ở đây thì dùng nó để tính
+  // công và hiển thị chi tiết, tránh làm tổng công về 0.
+  try {
+    const rows = []
+    const pageSize = 1000
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await supabase
+        .from('hr_records')
+        .select('id, data')
+        .eq('company_id', tenantId)
+        .eq('collection', 'attendanceLogs')
+        .gte('data->>date', `${period}-01`)
+        .lte('data->>date', `${period}-${lastDay}`)
+        .order('id', { ascending: true })
+        .range(from, from + pageSize - 1)
+      if (error) throw error
+      rows.push(...(data || []))
+      if (!data || data.length < pageSize) break
+    }
+    if (rows.length > 0) {
+      const out = {}
+      rows.forEach(row => {
+        out[logicalRecordId(row.id, 'attendanceLogs', companyId)] = row.data || {}
+      })
+      return out
+    }
+  } catch (err) {
+    console.warn('[fbGetAttendanceLogsByMonth] Lỗi đọc log hr_records:', err)
+  }
+
+  // Nếu chưa có log mềm thì đọc bảng cham_cong chính thức liên kết với nhan_su.
   try {
     let query = supabase
       .from('cham_cong')
       .select('*, nhan_su(id, ma_nhan_vien, ho_ten, chuc_vu, bo_phan, ca_lam)')
       .gte('ngay', `${period}-01`)
       .lte('ngay', `${period}-${lastDay}`)
-    if (companyId) query = query.eq('company_id', companyId)
+    query = query.eq('company_id', tenantId)
     const { data: ccData, error: ccErr } = await query.order('ngay', { ascending: true })
 
     if (!ccErr && ccData && ccData.length > 0) {
@@ -425,54 +469,54 @@ export const fbGetAttendanceLogsByMonth = async (month, companyId) => {
 
   const rows = []
   const pageSize = 1000
-  for (const prefix of companyRecordPrefixes('attendanceLogs', companyId)) {
-    for (let from = 0; ; from += pageSize) {
-      const { data, error } = await supabase
-        .from('hr_records')
-        .select('id, data')
-        .eq('collection', 'attendanceLogs')
-        .like('id', `${prefix}%`)
-        .gte('data->>date', `${period}-01`)
-        .lte('data->>date', `${period}-${lastDay}`)
-        .order('id', { ascending: true })
-        .range(from, from + pageSize - 1)
-      if (error) throw error
-      rows.push(...(data || []))
-      if (!data || data.length < pageSize) break
-    }
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from('hr_records')
+      .select('id, data')
+      .eq('company_id', tenantId)
+      .eq('collection', 'attendanceLogs')
+      .gte('data->>date', `${period}-01`)
+      .lte('data->>date', `${period}-${lastDay}`)
+      .order('id', { ascending: true })
+      .range(from, from + pageSize - 1)
+    if (error) throw error
+    rows.push(...(data || []))
+    if (!data || data.length < pageSize) break
   }
   const out = {}
-  rowsForCompany(rows, 'attendanceLogs', companyId).forEach(row => {
+  rows.forEach(row => {
     out[logicalRecordId(row.id, 'attendanceLogs', companyId)] = row.data || {}
   })
   return Object.keys(out).length ? out : null
 }
 
 /** List logical ids in a collection without loading full JSON payloads. */
-export const fbListCollectionIds = async (collection, companyId) => {
+export const fbListCollectionIds = async (collection, companyId = DEFAULT_COMPANY_ID) => {
   const name = String(collection || '').trim()
   if (!name) return []
   const rows = await readCollectionRows(name, companyId)
-  return Array.from(new Set(rowsForCompany(rows, name, companyId).map(row =>
+  return Array.from(new Set(rows.map(row =>
     logicalRecordId(row.id, name, companyId)
   )))
 }
 
-export const fbSet = async (path, data, companyId) => {
+export const fbSet = async (path, data, companyId = DEFAULT_COMPANY_ID) => {
   const parsed = parsePath(path)
 
   if (parsed.kind === 'record') {
-    await upsertRecord(parsed.collection, parsed.id, data || {}, companyId)
+    await setRecord(parsed.collection, parsed.id, data || {}, companyId)
     return
   }
 
   if (parsed.kind === 'collection') {
+    const tenantId = requireCompanyId(companyId)
     await deleteCollection(parsed.collection, companyId)
     const entries = Object.entries(data || {})
     if (!entries.length) return
     const rows = entries.map(([id, value]) => ({
       id: scopedRowId(parsed.collection, id, companyId),
       collection: parsed.collection,
+      company_id: tenantId,
       data: value || {},
       updated_at: new Date().toISOString()
     }))
@@ -482,17 +526,18 @@ export const fbSet = async (path, data, companyId) => {
   }
 
   if (parsed.kind === 'employees' && parsed.id) {
-    const dbPayload = mapAppToUser(data || {}) || {}
-    const { error } = await supabase.from('users').update(dbPayload).eq('id', parsed.id)
+    const tenantId = requireCompanyId(companyId)
+    const dbPayload = { ...(mapAppToUser(data || {}) || {}), company_id: tenantId }
+    const { error } = await supabase.from('users').update(dbPayload).eq('company_id', tenantId).eq('id', parsed.id)
     if (error) throw error
   }
 }
 
-export const fbPush = async (path, data, companyId) => {
+export const fbPush = async (path, data, companyId = DEFAULT_COMPANY_ID) => {
   const parsed = parsePath(path)
 
   if (parsed.kind === 'employees') {
-    return pushEmployee(data)
+    return pushEmployee(data, companyId)
   }
 
   const collection =
@@ -503,15 +548,16 @@ export const fbPush = async (path, data, companyId) => {
         : normalizePath(path).replace(/^hr\//, '') || 'misc'
 
   const id = genId()
-  await upsertRecord(collection, id, data || {}, companyId)
+  await upsertRecord(collection, scopedRowId(collection, id, companyId), data || {}, companyId)
   return { name: id }
 }
 
-export const fbDelete = async (path, companyId) => {
+export const fbDelete = async (path, companyId = DEFAULT_COMPANY_ID) => {
   const parsed = parsePath(path)
 
   if (parsed.kind === 'employees' && parsed.id) {
-    const { error } = await supabase.from('users').delete().eq('id', parsed.id)
+    const tenantId = requireCompanyId(companyId)
+    const { error } = await supabase.from('users').delete().eq('company_id', tenantId).eq('id', parsed.id)
     if (error) throw error
     return
   }
@@ -526,12 +572,13 @@ export const fbDelete = async (path, companyId) => {
   }
 }
 
-export const fbUpdate = async (path, data, companyId) => {
+export const fbUpdate = async (path, data, companyId = DEFAULT_COMPANY_ID) => {
   const parsed = parsePath(path)
 
   if (parsed.kind === 'employees' && parsed.id) {
-    const dbPayload = mapAppToUser(data || {}) || {}
-    const { error } = await supabase.from('users').update(dbPayload).eq('id', parsed.id)
+    const tenantId = requireCompanyId(companyId)
+    const dbPayload = { ...(mapAppToUser(data || {}) || {}), company_id: tenantId }
+    const { error } = await supabase.from('users').update(dbPayload).eq('company_id', tenantId).eq('id', parsed.id)
     if (error) throw error
     return
   }

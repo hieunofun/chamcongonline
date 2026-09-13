@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../services/supabase'
+import { DEFAULT_COMPANY_ID, supabase } from '../services/supabase'
 import { mapAppToUser, runUsersMutationWithSchemaFallback } from '../utils/helpers'
 import {
   DEFAULT_ATTENDANCE_SHIFT,
@@ -125,6 +125,7 @@ function getFileIcon(file) {
 }
 
 function EmployeeModal({
+  companyId = DEFAULT_COMPANY_ID,
   employee,
   isOpen,
   onClose,
@@ -236,6 +237,7 @@ function EmployeeModal({
           .from('users')
           .select('password')
           .eq('id', employee.id)
+          .eq('company_id', companyId)
           .maybeSingle()
           .then(({ data }) => {
             setHasExistingPassword(Boolean(data?.password))
@@ -248,7 +250,7 @@ function EmployeeModal({
       setHasExistingPassword(false)
       setFormData(prev => ({ ...prev, password: '123456', passwordConfirm: '123456' }))
     }
-  }, [employee, isOpen, readOnly])
+  }, [employee, isOpen, readOnly, companyId])
 
   const resetForm = () => {
     const emptyDoc = [{ name: '', url: '', attachments: [] }]
@@ -541,7 +543,7 @@ function EmployeeModal({
       delete payloadForm.passwordConfirm
 
       if (employee && employee.id) {
-        const dbPayload = mapAppToUser(payloadForm)
+        const dbPayload = { ...mapAppToUser(payloadForm), company_id: companyId }
         if (nextPassword) {
           dbPayload.password = nextPassword
         }
@@ -553,7 +555,8 @@ function EmployeeModal({
           (payload) => supabase
             .from('users')
             .update(payload)
-            .eq('id', employee.id),
+            .eq('id', employee.id)
+            .eq('company_id', companyId),
           dbPayload
         )
         const { error } = mutationResult
@@ -562,6 +565,7 @@ function EmployeeModal({
 
         if (editable && oldStatus !== newStatus) {
           const historyPayload = {
+            company_id: companyId,
             employee_id: employee.id,
             employee_code: employee.employeeId || '',
             employee_name: formData.ho_va_ten || employee.ho_va_ten || '',
@@ -584,7 +588,7 @@ function EmployeeModal({
         if (readOnly) return
         if ('id' in formData) delete formData.id
 
-        const dbPayload = mapAppToUser(payloadForm)
+        const dbPayload = { ...mapAppToUser(payloadForm), company_id: companyId }
         dbPayload.password = nextPassword || '123456'
         dbPayload.id = crypto.randomUUID()
 

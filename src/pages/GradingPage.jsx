@@ -7,6 +7,7 @@ function GradingPage() {
     const { employeeId } = useParams()
     const [loading, setLoading] = useState(false)
     const { user: authUser } = useAuth()
+    const companyId = String(authUser?.company_id || authUser?.companyId || '')
     const [user, setUser] = useState(null)
     const [userProfile, setUserProfile] = useState(null)
     const [month, setMonth] = useState(new Date().toISOString().slice(0, 7)) // YYYY-MM
@@ -69,7 +70,7 @@ function GradingPage() {
 
     useEffect(() => {
         checkUser()
-    }, [])
+    }, [authUser, employeeId])
 
     useEffect(() => {
         if (user && month) {
@@ -89,6 +90,7 @@ function GradingPage() {
                 .from('users')
                 .select('*')
                 .eq('id', targetId)
+                .eq('company_id', companyId)
                 .maybeSingle()
             if (profile) {
                 setUserProfile(profile)
@@ -107,6 +109,7 @@ function GradingPage() {
                 .from('performance_reviews')
                 .select('*')
                 .eq('employee_id', targetId)
+                .eq('company_id', companyId)
                 .eq('month', month)
                 .maybeSingle()
 
@@ -216,6 +219,7 @@ function GradingPage() {
         setLoading(true)
         try {
             const payload = {
+                company_id: companyId,
                 employee_id: targetId,
                 month,
                 self_assessment: formData,
@@ -238,6 +242,7 @@ function GradingPage() {
                     .from('performance_reviews')
                     .update(payload)
                     .eq('id', reviewId)
+                    .eq('company_id', companyId)
                 error = updateError
             } else {
                 const { error: insertError } = await supabase

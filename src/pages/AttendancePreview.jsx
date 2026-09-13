@@ -479,68 +479,39 @@ function AttendancePreview() {
     [excelPageSize, excelSafePage, filteredExcelLogs]
   )
 
-  const handleDownloadPdf = () => {
-    const isMatrix = detailViewMode === 'matrix'
-    const headers = isMatrix
-      ? ['STT', 'Mã nhân viên', 'Họ và tên', 'Công ty', 'Chức vụ', ...monthDaysHeader.map(day => day.dayStr), 'Tổng công']
-      : ['STT', 'Mã NV', 'Họ tên', 'Công ty', 'Tên máy CC', 'Phòng ban', 'Ngày', 'Thứ', 'Vào', 'Ra', 'Công', 'Giờ', 'Công+', 'Vào trễ', 'Ra sớm', 'TC1', 'TC2', 'TC3', 'Ca', 'KH', 'KH+', 'Tổng giờ']
-    const reportRows = isMatrix
-      ? matrixRows.map((employee, index) => [
-          index + 1,
-          employee.code || '-',
-          employee.name || '-',
-          companyName,
-          employee.position || '-',
-          ...monthDaysHeader.map(day => employee.dailyMap[day.dayStr] || ''),
-          employee.totalCong
-        ])
-      : filteredExcelLogs.map((log, index) => {
-          const dateStr = log.date ? String(log.date).slice(0, 10) : ''
-          const hours = Number(log.hours ?? log.soGio ?? log.gio ?? 0) || 0
-          const gioPlus = Number(log.gioPlus ?? 0) || 0
-          const tongGio = Number(log.tongGio ?? hours + gioPlus) || 0
-          const late = Number(log.lateMinutes ?? log.vaoTre ?? 0) || 0
-          const early = Number(log.earlyMinutes ?? log.raSom ?? 0) || 0
-          return [
-            index + 1,
-            log.displayEmployeeCode || log.sourceEmployeeCode || log.employeeCode || '-',
-            log.employeeName || '-',
-            companyName,
-            log.machineName || log.tenTheoMayChamCong || '-',
-            log.department || log.phongBan || '-',
-            dateStr ? new Date(`${dateStr}T00:00:00`).toLocaleDateString('vi-VN') : '-',
-            log.dayOfWeek || log.thu || dayOfWeekFromDate(dateStr) || '-',
-            formatTimeHM(log.vao || log.checkIn) || '-',
-            formatTimeHM(log.ra || log.checkOut) || '-',
-            log.cong ?? '-',
-            hours ? hours.toFixed(2) : '-',
-            log.congPlus ?? '-',
-            late > 0 ? `${late}p` : '-',
-            early > 0 ? `${early}p` : '-',
-            log.tc1 ?? '-',
-            log.tc2 ?? '-',
-            log.tc3 ?? '-',
-            log.profileShift || log.shiftName || log.tenCa || '-',
-            log.kyHieu || log.status || '-',
-            log.kyHieuPlus || '-',
-            tongGio ? tongGio.toFixed(2) : '-'
-          ]
-        })
-
-    if (!reportRows.length) {
-      alert('Không có dữ liệu phù hợp với bộ lọc hiện tại để xuất PDF.')
+  const handleDownloadSummaryPdf = () => {
+    if (!rows.length) {
+      alert('Chưa có dữ liệu bảng công tổng hợp để xuất PDF.')
       return
     }
 
+    const headers = [
+      'STT', 'Họ tên', 'Công ty', 'Bộ phận', 'Ca làm', 'Notes',
+      'Tăng ca', 'Phép sử dụng', 'Công làm lễ', 'Công lễ', 'Tổng công'
+    ]
+    const reportRows = rows.map((row, index) => [
+      index + 1,
+      row.employeeName || '-',
+      companyName,
+      row.displayDepartment || row.department || '-',
+      row.shift || '-',
+      row.notes || '-',
+      row.overtimeHours ?? '-',
+      row.paidLeaveWorkdays ?? '-',
+      row.congLamLe ?? row.holidayWorkdays ?? '-',
+      row.congLe ?? '-',
+      row.workdays != null && row.workdays !== '' ? Number(row.workdays).toFixed(2) : '0.00'
+    ])
+
     openAttendancePrintWindow({
-      title: `Bảng chấm công ${isMatrix ? 'ma trận' : 'chi tiết'} tháng ${month}`,
+      title: `Bảng công tổng hợp tháng ${month}`,
       companyName,
       month,
-      filterLabel: excelSearch.trim() ? `Tìm kiếm: ${excelSearch.trim()}` : 'Tất cả nhân sự/bản ghi',
+      filterLabel: 'Tất cả nhân sự',
       exportedAt: new Date().toLocaleString('vi-VN'),
       headers,
       rows: reportRows,
-      tableMode: isMatrix ? 'matrix' : 'list'
+      tableMode: 'list'
     })
   }
 
@@ -556,7 +527,9 @@ function AttendancePreview() {
     try {
       const [empData, logsData, storedSettings] = await Promise.all([
         fbGetEmployeesDirectory(companyId),
-        fbGetAttendanceLogsByMonth(month || currentMonthValue(), companyId),
+        // Nạp toàn bộ log để chống tạo bản ghi trùng khi file có tháng khác
+        // tháng đang chọn trên màn hình (tháng sẽ được nhận diện từ file).
+        fbGet('hr/attendanceLogs', companyId),
         fbGet('hr/attendanceSettings/default', companyId)
       ])
       setAttendanceSettings(normalizeAttendanceShiftSettings(storedSettings))
@@ -632,9 +605,9 @@ function AttendancePreview() {
     return snapshot
   }, [applySnapshot, companyId, companyName])
 
-  const handleImportComplete = async () => {
+  const handleImportComplete = async (importedMonth = '') => {
     setIsImportOpen(false)
-    const targetMonth = month || currentMonthValue()
+    const targetMonth = importedMonth || month || currentMonthValue()
     setSummarizing(true)
     setError('')
     try {
@@ -882,6 +855,17 @@ function AttendancePreview() {
         {hasSnapshot && (
           <button type="button" className="attendance-preview-summarize" onClick={handleSummarize} disabled={summarizing}>
             {summarizing ? 'Đang lưu...' : 'Tổng hợp lại'}
+          </button>
+        )}
+        {hasSnapshot && (
+          <button
+            type="button"
+            className="attendance-preview-pdf-btn"
+            onClick={handleDownloadSummaryPdf}
+            disabled={summarizing || !rows.length}
+            title={`Xuất bảng công tổng hợp tháng ${month} dưới dạng PDF`}
+          >
+            Tải PDF
           </button>
         )}
       </div>
@@ -1133,15 +1117,6 @@ function AttendancePreview() {
                 title={`Tải dữ liệu chấm công tháng ${month} của ${companyName} xuống Excel`}
               >
                 Tải Excel
-              </button>
-              <button
-                type="button"
-                className="attendance-pdf-download-btn"
-                onClick={handleDownloadPdf}
-                disabled={excelLogsLoading || !(detailViewMode === 'matrix' ? matrixRows.length : filteredExcelLogs.length)}
-                title={`Tải bảng chấm công tháng ${month} của ${companyName} dưới dạng PDF`}
-              >
-                Tải PDF
               </button>
               <button type="button" onClick={() => setIsExcelDetailOpen(false)}>Đóng</button>
             </div>

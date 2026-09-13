@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import EmployeeDirectory from '../components/EmployeeDirectory'
 import { supabase } from '../services/supabase'
+import { useAuth } from '../contexts/AuthContext'
+import { getCompanyIdForUser } from '../utils/companyContext'
 import { formatDateDisplay, getEmployeeEmploymentStatus, mapAppToUser, mapUserToApp, parseFlexibleDate, runUsersMutationWithSchemaFallback, USERS_DIRECTORY_COLUMNS, getMissingUsersColumnFromError } from '../utils/helpers'
 
 const loadXlsx = () => import('xlsx')
 
-const fetchUsersDirectory = async () => {
+const fetchUsersDirectory = async (companyId) => {
     let columns = USERS_DIRECTORY_COLUMNS.split(', ')
     const pageSize = 1000
 
@@ -13,6 +15,7 @@ const fetchUsersDirectory = async () => {
         supabase
             .from('users')
             .select(columns.join(','))
+            .eq('company_id', companyId)
             .order('name', { ascending: true })
             .range(from, from + pageSize - 1)
 
@@ -64,6 +67,8 @@ const EMPLOYEE_EXCEL_HEADERS = [
 ]
 
 function Employees() {
+    const { user } = useAuth()
+    const companyId = getCompanyIdForUser(user)
     const [employees, setEmployees] = useState([])
     const [filteredEmployees, setFilteredEmployees] = useState([])
     const [loading, setLoading] = useState(true)
@@ -85,7 +90,7 @@ function Employees() {
 
     useEffect(() => {
         loadEmployees()
-    }, [])
+    }, [companyId])
 
     useEffect(() => {
         filterEmployees()
@@ -94,7 +99,7 @@ function Employees() {
     const loadEmployees = async () => {
         try {
             setLoading(true)
-            const data = await fetchUsersDirectory()
+            const data = await fetchUsersDirectory(companyId)
             setEmployees((data || []).map(u => mapUserToApp(u)))
             setLoading(false)
         } catch (err) {
@@ -110,6 +115,7 @@ function Employees() {
             .from('users')
             .select('*')
             .eq('id', employee.id)
+            .eq('company_id', companyId)
             .maybeSingle()
         if (error || !data) return employee
         return mapUserToApp(data)
@@ -199,6 +205,7 @@ function Employees() {
                 .from('users')
                 .delete()
                 .eq('id', id)
+                .eq('company_id', companyId)
 
             if (error) throw error
 
@@ -363,7 +370,7 @@ function Employees() {
                 return
             }
 
-            const headerKeywords = ['ho_va_ten', 'ho_ten', 'chi_nhanh', 'email_ca_nhan', 'vi_tri', 'so_cccd', 'sdt', 'ma_nv', 'ma_nhan_vien']
+            const headerKeywords = ['ho_va_ten', 'ho_ten', 'ten_nhan_vien', 'chi_nhanh', 'email_ca_nhan', 'vi_tri', 'so_cccd', 'sdt', 'ma_nv', 'ma_nhan_vien']
             let headerIdx = 0
             for (let i = 0; i < Math.min(rows.length, 15); i++) {
                 const normalized = (rows[i] || []).map(h => normalizeHeader(h))
@@ -451,6 +458,7 @@ function Employees() {
             let updated = 0
             let skipped = 0
             const errors = []
+            const seenImportKeys = new Map()
 
             for (let i = 0; i < dataRows.length; i++) {
                 const row = dataRows[i]
@@ -464,7 +472,7 @@ function Employees() {
 
                 const payload = {
                     employeeId: pick(rowObj, 'ma_nhan_vien', 'ma_nv', 'employee_id'),
-                    ho_va_ten: pick(rowObj, 'ho_va_ten', 'ho_ten', 'ten', 'name'),
+                    ho_va_ten: pick(rowObj, 'ho_va_ten', 'ho_ten', 'ten_nhan_vien', 'ten', 'name'),
                     email: pick(rowObj, 'email_ca_nhan', 'email'),
                     sđt: pick(rowObj, 'sdt', 'so_dien_thoai', 'dien_thoai', 'phone'),
                     username: pick(rowObj, 'ten_dang_nhap', 'username', 'user_name'),
@@ -496,6 +504,24 @@ function Employees() {
                     continue
                 }
 
+                // Bảng chấm công thường lặp lại một nhân viên theo từng ngày.
+                // Chỉ tạo hồ sơ một lần, đồng thời báo rõ mã có nhiều tên khác nhau.
+                const codeKey = normalizeCode(payload.employeeId)
+                const importKey = codeKey || normalizeCode(payload.ho_va_ten)
+                const previousName = seenImportKeys.get(importKey)
+                if (previousName) {
+                    if (normalizeCode(previousName) !== normalizeCode(payload.ho_va_ten)) {
+                        errors.push({
+                            row: rowIndex,
+                            name: payload.ho_va_ten,
+                            reason: `Mã NV ${payload.employeeId || '(trống)'} xuất hiện với tên khác (${previousName}); giữ hồ sơ đầu tiên`
+                        })
+                    }
+                    skipped++
+                    continue
+                }
+                seenImportKeys.set(importKey, payload.ho_va_ten)
+
                 const rowErrors = []
 
                 if (!isValidDate(payload.ngay_sinh)) rowErrors.push(`Ngày sinh không hợp lệ: "${payload.ngay_sinh}" (cần dd/mm/yyyy)`)
@@ -513,14 +539,13 @@ function Employees() {
                     continue
                 }
 
-                const dbPayload = mapAppToUser(payload)
-                const codeKey = normalizeCode(payload.employeeId)
+                const dbPayload = { ...mapAppToUser(payload), company_id: companyId }
                 const existing = codeKey ? existingByCode.get(codeKey) : null
 
                 let mutationResult
                 if (existing?.id) {
                     mutationResult = await runUsersMutationWithSchemaFallback(
-                        (payloadToSave) => supabase.from('users').update(payloadToSave).eq('id', existing.id),
+                        (payloadToSave) => supabase.from('users').update(payloadToSave).eq('id', existing.id).eq('company_id', companyId),
                         dbPayload
                     )
                 } else {
@@ -537,12 +562,35 @@ function Employees() {
 
                 const { error } = mutationResult
 
-                if (error) {
-                    console.error('❌ Import error for:', payload.ho_va_ten, error)
+                let nhanSuError = null
+                if (!error) {
+                    const nhanSuCode = String(payload.employeeId || dbPayload.employee_id || `NV-${rowIndex}`).trim()
+                    const { error: syncError } = await supabase
+                        .from('nhan_su')
+                        .upsert([{
+                            company_id: companyId,
+                            ma_nhan_vien: nhanSuCode,
+                            ho_ten: payload.ho_va_ten,
+                            chuc_vu: payload.vi_tri || '',
+                            bo_phan: payload.bo_phan || '',
+                            ca_lam: payload.ca_lam_viec || 'Ca ngày',
+                            trang_thai: payload.trang_thai || '',
+                            so_dien_thoai: payload.sđt || '',
+                            email: payload.email || '',
+                            ngay_vao_lam: parseFlexibleDate(payload.ngay_vao_lam),
+                            avatar_url: payload.avatarUrl || '',
+                            updated_at: new Date().toISOString()
+                        }], { onConflict: 'company_id,ma_nhan_vien' })
+                    nhanSuError = syncError
+                }
+
+                if (error || nhanSuError) {
+                    const finalError = error || nhanSuError
+                    console.error('❌ Import error for:', payload.ho_va_ten, finalError)
                     errors.push({
                         row: rowIndex,
                         name: payload.ho_va_ten,
-                        reason: describeDbError(error)
+                        reason: describeDbError(finalError)
                     })
                     skipped++
                 } else if (existing?.id) {
@@ -770,6 +818,7 @@ function Employees() {
     }
 
     return <EmployeeDirectory
+        companyId={companyId}
         employees={employees}
         filteredEmployees={filteredEmployees}
         activeTab={activeTab}

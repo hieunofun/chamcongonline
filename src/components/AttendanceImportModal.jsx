@@ -1288,13 +1288,28 @@ function AttendanceImportModal({
         alert(`Không tìm thấy dữ liệu hợp lệ.\n${hint || 'Vui lòng kiểm tra lại file và mã NV khớp hệ thống.'}`)
         setPreviewData(null)
       } else {
+        // Tự nhận diện tháng từ ngày trong mọi định dạng file (không chỉ ma trận).
+        // Nhờ đó file tháng 08 không bị lưu nhầm vào tháng đang mở trên màn hình.
+        const monthCounts = new Map()
+        result.logs.forEach(log => {
+          const date = String(log.date || log.ngay || '').slice(0, 10)
+          const match = date.match(/^(\d{4})-(\d{2})-/)
+          if (match) {
+            const value = `${match[1]}-${match[2]}`
+            monthCounts.set(value, (monthCounts.get(value) || 0) + 1)
+          }
+        })
+        const detectedImportMonth = Array.from(monthCounts.entries())
+          .sort((left, right) => right[1] - left[1])[0]?.[0] || importMonth
+        setImportMonth(detectedImportMonth)
         setPreviewData(
           prepareMatchingPreview(result.logs, {
             modeLabel,
             isMatrixMode: format === 'matrix',
             detectedDays,
             skipped: result.skipped,
-            isReconcileMode: false
+            isReconcileMode: false,
+            importMonth: detectedImportMonth
           })
         )
       }
@@ -1472,7 +1487,7 @@ function AttendanceImportModal({
           `${skippedCount ? ` Bỏ qua ${skippedCount} dòng đã có.` : ''}`
         )
       }
-      await onSave()
+      await onSave(previewData.importMonth || importMonth)
       onClose()
       setFile(null)
       setReferenceImage(null)

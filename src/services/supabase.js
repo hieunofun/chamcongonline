@@ -27,7 +27,7 @@ if (supabaseUrl.includes('your-company-b-project-id')) {
 }
 
 export const DEFAULT_COMPANY_ID =
-  cleanEnv(import.meta.env.VITE_DEFAULT_COMPANY_ID) || '00000000-0000-0000-0000-000000000001'
+  cleanEnv(import.meta.env.VITE_DEFAULT_COMPANY_ID) || '00000000-0000-0000-0000-000000000022'
 
 export const supabase = createClient(
   supabaseUrl || 'https://placeholder.supabase.co',

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useAuth } from '../contexts/AuthContext'
 import { fbGet, fbGetAttendanceLogsByMonth, fbGetEmployeesDirectory, fbListCollectionIds, fbSet } from '../services/firebase'
+import { getCompanyInfo } from '../services/companyBDb'
 import {
   buildAttendanceSummary,
   hydrateAttendanceSummaryRows,
@@ -12,6 +14,8 @@ import {
   normalizeAttendanceShiftSettings,
   resolveAttendanceShift
 } from '../utils/attendanceShift'
+import { getCompanyIdForUser, getCompanyNameForContext } from '../utils/companyContext'
+import { openAttendancePrintWindow } from '../utils/attendancePdf'
 import './AttendancePreview.css'
 
 const EXCEL_DETAIL_PAGE_SIZE = 100
@@ -151,9 +155,17 @@ const groupRowsByDepartment = rows => {
 }
 
 function AttendancePreview() {
+  const { user } = useAuth()
+  const companyId = useMemo(() => getCompanyIdForUser(user), [user])
+  const [companyInfo, setCompanyInfo] = useState(null)
+  const companyName = useMemo(
+    () => getCompanyNameForContext(companyInfo, user),
+    [companyInfo, user]
+  )
   const [month, setMonth] = useState(currentMonthValue)
   const [summaryMonths, setSummaryMonths] = useState([])
   const [rows, setRows] = useState([])
+  const [loadedCompanyId, setLoadedCompanyId] = useState('')
   const [generatedAt, setGeneratedAt] = useState('')
   const [sourceLogCount, setSourceLogCount] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -174,6 +186,18 @@ function AttendancePreview() {
   const [excelPage, setExcelPage] = useState(1)
   const [excelPageSize, setExcelPageSize] = useState(EXCEL_DETAIL_PAGE_SIZE)
   const [detailViewMode, setDetailViewMode] = useState('matrix')
+
+  useEffect(() => {
+    let active = true
+    setCompanyInfo(null)
+    getCompanyInfo(companyId).then(info => {
+      if (active) setCompanyInfo(info)
+    }).catch(error => {
+      console.warn('Không tải được tên công ty cho bảng công:', error)
+      if (active) setCompanyInfo(null)
+    })
+    return () => { active = false }
+  }, [companyId])
 
   const daysInSelectedMonth = useMemo(() => {
     const [y, m] = String(month || '').split('-').map(Number)
@@ -260,20 +284,20 @@ function AttendancePreview() {
       return
     }
     try {
-      const data = await fbGet(`hr/attendanceMonthConfirmations/${targetMonth}`)
+      const data = await fbGet(`hr/attendanceMonthConfirmations/${targetMonth}`, companyId)
       setConfirmations(data && typeof data === 'object' ? data : {})
     } catch (requestError) {
       console.warn('Không tải được xác nhận bảng công:', requestError)
       setConfirmations({})
     }
-  }, [])
+  }, [companyId])
 
   const loadSummaryIndex = useCallback(async () => {
-    const ids = await fbListCollectionIds('attendanceMonthSummaries')
+    const ids = await fbListCollectionIds('attendanceMonthSummaries', companyId)
     const months = ids.filter(value => /^\d{4}-\d{2}$/.test(value)).sort().reverse()
     setSummaryMonths(months)
     return months
-  }, [])
+  }, [companyId])
 
   const loadMonthSnapshot = useCallback(async (targetMonth) => {
     if (!targetMonth) return
@@ -281,8 +305,8 @@ function AttendancePreview() {
     setError('')
     try {
       const [snapshot, storedSettings] = await Promise.all([
-        fbGet(`hr/attendanceMonthSummaries/${targetMonth}`),
-        fbGet('hr/attendanceSettings/default'),
+        fbGet(`hr/attendanceMonthSummaries/${targetMonth}`, companyId),
+        fbGet('hr/attendanceSettings/default', companyId),
         loadConfirmations(targetMonth)
       ])
       setAttendanceSettings(normalizeAttendanceShiftSettings(storedSettings))
@@ -295,12 +319,13 @@ function AttendancePreview() {
     } finally {
       setLoading(false)
     }
-  }, [applySnapshot, loadConfirmations])
+  }, [applySnapshot, companyId, loadConfirmations])
 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       setLoading(true)
+      setLoadedCompanyId('')
       setError('')
       try {
         const months = await loadSummaryIndex()
@@ -308,23 +333,27 @@ function AttendancePreview() {
         const current = currentMonthValue()
         const initialMonth = months.includes(current) ? current : (months[0] || current)
         const [initialSnapshot, storedSettings] = await Promise.all([
-          fbGet(`hr/attendanceMonthSummaries/${initialMonth}`),
-          fbGet('hr/attendanceSettings/default'),
+          fbGet(`hr/attendanceMonthSummaries/${initialMonth}`, companyId),
+          fbGet('hr/attendanceSettings/default', companyId),
           loadConfirmations(initialMonth)
         ])
         if (cancelled) return
         setAttendanceSettings(normalizeAttendanceShiftSettings(storedSettings))
         setMonth(initialMonth)
         applySnapshot(initialSnapshot, initialMonth)
+        setLoadedCompanyId(companyId)
       } catch (requestError) {
         console.error('Không tải được danh sách bảng công:', requestError)
-        if (!cancelled) setError('Không thể tải dữ liệu bảng công.')
+        if (!cancelled) {
+          setError('Không thể tải dữ liệu bảng công.')
+          setLoadedCompanyId(companyId)
+        }
       } finally {
         if (!cancelled) setLoading(false)
       }
     })()
     return () => { cancelled = true }
-  }, [applySnapshot, loadConfirmations, loadSummaryIndex])
+  }, [applySnapshot, companyId, loadConfirmations, loadSummaryIndex])
 
   const handleMonthChange = async (nextMonth) => {
     setMonth(nextMonth)
@@ -340,8 +369,8 @@ function AttendancePreview() {
     setExcelPageSize(EXCEL_DETAIL_PAGE_SIZE)
     try {
       const [logsData, empData] = await Promise.all([
-        fbGetAttendanceLogsByMonth(targetMonth),
-        fbGetEmployeesDirectory()
+        fbGetAttendanceLogsByMonth(targetMonth, companyId),
+        fbGetEmployeesDirectory(companyId)
       ])
       const employeesById = new Map(
         (empData
@@ -388,6 +417,7 @@ function AttendancePreview() {
           STT: index + 1,
           'Mã NV': log.displayEmployeeCode || log.sourceEmployeeCode || log.employeeCode || '',
           'Họ tên': log.employeeName || '',
+          'Công ty': companyName,
           'Tên máy CC': log.machineName || log.tenTheoMayChamCong || '',
           'Phòng ban': log.department || log.phongBan || '',
           Ngày: dateStr
@@ -449,6 +479,71 @@ function AttendancePreview() {
     [excelPageSize, excelSafePage, filteredExcelLogs]
   )
 
+  const handleDownloadPdf = () => {
+    const isMatrix = detailViewMode === 'matrix'
+    const headers = isMatrix
+      ? ['STT', 'Mã nhân viên', 'Họ và tên', 'Công ty', 'Chức vụ', ...monthDaysHeader.map(day => day.dayStr), 'Tổng công']
+      : ['STT', 'Mã NV', 'Họ tên', 'Công ty', 'Tên máy CC', 'Phòng ban', 'Ngày', 'Thứ', 'Vào', 'Ra', 'Công', 'Giờ', 'Công+', 'Vào trễ', 'Ra sớm', 'TC1', 'TC2', 'TC3', 'Ca', 'KH', 'KH+', 'Tổng giờ']
+    const reportRows = isMatrix
+      ? matrixRows.map((employee, index) => [
+          index + 1,
+          employee.code || '-',
+          employee.name || '-',
+          companyName,
+          employee.position || '-',
+          ...monthDaysHeader.map(day => employee.dailyMap[day.dayStr] || ''),
+          employee.totalCong
+        ])
+      : filteredExcelLogs.map((log, index) => {
+          const dateStr = log.date ? String(log.date).slice(0, 10) : ''
+          const hours = Number(log.hours ?? log.soGio ?? log.gio ?? 0) || 0
+          const gioPlus = Number(log.gioPlus ?? 0) || 0
+          const tongGio = Number(log.tongGio ?? hours + gioPlus) || 0
+          const late = Number(log.lateMinutes ?? log.vaoTre ?? 0) || 0
+          const early = Number(log.earlyMinutes ?? log.raSom ?? 0) || 0
+          return [
+            index + 1,
+            log.displayEmployeeCode || log.sourceEmployeeCode || log.employeeCode || '-',
+            log.employeeName || '-',
+            companyName,
+            log.machineName || log.tenTheoMayChamCong || '-',
+            log.department || log.phongBan || '-',
+            dateStr ? new Date(`${dateStr}T00:00:00`).toLocaleDateString('vi-VN') : '-',
+            log.dayOfWeek || log.thu || dayOfWeekFromDate(dateStr) || '-',
+            formatTimeHM(log.vao || log.checkIn) || '-',
+            formatTimeHM(log.ra || log.checkOut) || '-',
+            log.cong ?? '-',
+            hours ? hours.toFixed(2) : '-',
+            log.congPlus ?? '-',
+            late > 0 ? `${late}p` : '-',
+            early > 0 ? `${early}p` : '-',
+            log.tc1 ?? '-',
+            log.tc2 ?? '-',
+            log.tc3 ?? '-',
+            log.profileShift || log.shiftName || log.tenCa || '-',
+            log.kyHieu || log.status || '-',
+            log.kyHieuPlus || '-',
+            tongGio ? tongGio.toFixed(2) : '-'
+          ]
+        })
+
+    if (!reportRows.length) {
+      alert('Không có dữ liệu phù hợp với bộ lọc hiện tại để xuất PDF.')
+      return
+    }
+
+    openAttendancePrintWindow({
+      title: `Bảng chấm công ${isMatrix ? 'ma trận' : 'chi tiết'} tháng ${month}`,
+      companyName,
+      month,
+      filterLabel: excelSearch.trim() ? `Tìm kiếm: ${excelSearch.trim()}` : 'Tất cả nhân sự/bản ghi',
+      exportedAt: new Date().toLocaleString('vi-VN'),
+      headers,
+      rows: reportRows,
+      tableMode: isMatrix ? 'matrix' : 'list'
+    })
+  }
+
   useEffect(() => {
     setExcelPage(1)
   }, [excelSearch, excelPageSize])
@@ -460,9 +555,9 @@ function AttendancePreview() {
   const handleOpenImport = async () => {
     try {
       const [empData, logsData, storedSettings] = await Promise.all([
-        fbGetEmployeesDirectory(),
-        fbGetAttendanceLogsByMonth(month || currentMonthValue()),
-        fbGet('hr/attendanceSettings/default')
+        fbGetEmployeesDirectory(companyId),
+        fbGetAttendanceLogsByMonth(month || currentMonthValue(), companyId),
+        fbGet('hr/attendanceSettings/default', companyId)
       ])
       setAttendanceSettings(normalizeAttendanceShiftSettings(storedSettings))
       if (empData) {
@@ -491,11 +586,11 @@ function AttendancePreview() {
     }
 
     const [employeeData, logData, nextAdjustments, nextManuals, storedSettings] = await Promise.all([
-      fbGetEmployeesDirectory(),
-      fbGetAttendanceLogsByMonth(targetMonth),
-      fbGet(`hr/attendanceAdjustments/${targetMonth}`),
-      fbGet(`hr/manualWorkdays/${targetMonth}`),
-      fbGet('hr/attendanceSettings/default')
+      fbGetEmployeesDirectory(companyId),
+      fbGetAttendanceLogsByMonth(targetMonth, companyId),
+      fbGet(`hr/attendanceAdjustments/${targetMonth}`, companyId),
+      fbGet(`hr/manualWorkdays/${targetMonth}`, companyId),
+      fbGet('hr/attendanceSettings/default', companyId)
     ])
     const nextAttendanceSettings = normalizeAttendanceShiftSettings(storedSettings)
     setAttendanceSettings(nextAttendanceSettings)
@@ -517,12 +612,14 @@ function AttendancePreview() {
     const filteredSummaryRows = summaryRows.filter(row => validEmpIds.has(String(row.employeeId)))
     const snapshot = {
       month: targetMonth,
+      companyId,
+      companyName,
       generatedAt: new Date().toISOString(),
       sourceLogCount: monthLogs.length,
       employeeCount: filteredSummaryRows.length,
       rows: serializeAttendanceSummaryRows(filteredSummaryRows)
     }
-    await fbSet(`hr/attendanceMonthSummaries/${targetMonth}`, snapshot)
+    await fbSet(`hr/attendanceMonthSummaries/${targetMonth}`, snapshot, companyId)
     applySnapshot(snapshot, targetMonth)
     setSummaryMonths(prev => {
       const next = new Set(prev)
@@ -533,7 +630,7 @@ function AttendancePreview() {
       alert(`Đã lưu bảng công tháng ${targetMonth} (${summaryRows.length} nhân viên).`)
     }
     return snapshot
-  }, [applySnapshot])
+  }, [applySnapshot, companyId, companyName])
 
   const handleImportComplete = async () => {
     setIsImportOpen(false)
@@ -588,7 +685,7 @@ function AttendancePreview() {
     setConfirmations(next)
     setConfirmSaving(true)
     try {
-      await fbSet(`hr/attendanceMonthConfirmations/${targetMonth}`, next)
+      await fbSet(`hr/attendanceMonthConfirmations/${targetMonth}`, next, companyId)
     } catch (requestError) {
       console.error('Không lưu được xác nhận:', requestError)
       setConfirmations(previous)
@@ -609,7 +706,7 @@ function AttendancePreview() {
     setConfirmations(next)
     setConfirmSaving(true)
     try {
-      await fbSet(`hr/attendanceMonthConfirmations/${targetMonth}`, next)
+      await fbSet(`hr/attendanceMonthConfirmations/${targetMonth}`, next, companyId)
     } catch (requestError) {
       console.error('Không lưu được xác nhận:', requestError)
       setConfirmations(previous)
@@ -728,13 +825,14 @@ function AttendancePreview() {
     return `${sample.standardCheckIn} - ${sample.standardCheckOut}`
   }, [detailDays])
 
-  if (loading) return <div className="attendance-preview-state">Đang tải bảng công đã tổng hợp...</div>
+  if (loading || loadedCompanyId !== companyId) return <div className="attendance-preview-state">Đang tải bảng công đã tổng hợp...</div>
   if (error && !hasSnapshot) return <div className="attendance-preview-state is-error">{error}</div>
 
   return <div className="attendance-preview-page">
     <header>
       <div>
         <h1>Bảng công {month}</h1>
+        <p className="attendance-company-context">Công ty: <strong>{companyName}</strong></p>
         <p>
           {hasSnapshot
             ? `Đã lưu lúc ${formatGeneratedAt(generatedAt)}${sourceLogCount ? ` · ${sourceLogCount} bản ghi chấm công` : ''}`
@@ -813,6 +911,7 @@ function AttendancePreview() {
                 </label>
               </th>
               <th>Họ tên</th>
+              <th>Công ty</th>
               <th>Bộ phận</th>
               <th>Ca làm</th>
               <th>Notes</th>
@@ -844,6 +943,7 @@ function AttendancePreview() {
                 >
                   {row.employeeName}
                 </td>
+                <td>{companyName}</td>
                 {departmentRowSpans[index] > 0 && (
                   <td rowSpan={departmentRowSpans[index]}>{row.displayDepartment}</td>
                 )}
@@ -870,13 +970,14 @@ function AttendancePreview() {
                   <th>STT</th>
                   <th>Mã NV</th>
                   <th>Nhân sự</th>
+                  <th>Công ty</th>
                   {weekLabels.map(label => <th key={label}>{label}</th>)}
                 </tr>
               </thead>
               <tbody>
                 {weeklyPeople.length === 0 ? (
                   <tr>
-                    <td colSpan={3 + weekLabels.length} className="weeks-empty">Không có phát sinh theo tuần</td>
+                    <td colSpan={4 + weekLabels.length} className="weeks-empty">Không có phát sinh theo tuần</td>
                   </tr>
                 ) : (
                   weeklyPeople.map((person, index) => (
@@ -884,6 +985,7 @@ function AttendancePreview() {
                       <td>{index + 1}</td>
                       <td className="employee-code">{person.employeeCode || '-'}</td>
                       <td className="name">{person.employeeName}</td>
+                      <td>{companyName}</td>
                       {person.weeks.map(week => (
                         <td key={week.label} className={week.flags.length ? 'has-issue' : ''}>
                           {week.flags.length ? week.flags.join(' · ') : '—'}
@@ -907,6 +1009,8 @@ function AttendancePreview() {
         employees={importEmployees}
         attendanceLogs={importLogs}
         attendanceSettings={attendanceSettings}
+        companyId={companyId}
+        companyName={companyName}
       />
     )}
     {detailRow && (
@@ -919,6 +1023,7 @@ function AttendancePreview() {
                 {detailRow.employeeCode ? `${detailRow.employeeCode} · ` : ''}
                 {detailRow.displayDepartment || detailRow.department || ''}
                 {detailRow.shift ? ` · ${detailRow.shift}` : ''}
+                {` · ${companyName}`}
                 {` · Tháng ${month}`}
               </p>
             </div>
@@ -1024,9 +1129,19 @@ function AttendancePreview() {
                 type="button"
                 className="attendance-excel-download-btn"
                 onClick={handleDownloadExcelDetail}
-                disabled={excelLogsLoading || (!filteredExcelLogs.length && !matrixRows.length)}
+                disabled={excelLogsLoading || !filteredExcelLogs.length}
+                title={`Tải dữ liệu chấm công tháng ${month} của ${companyName} xuống Excel`}
               >
                 Tải Excel
+              </button>
+              <button
+                type="button"
+                className="attendance-pdf-download-btn"
+                onClick={handleDownloadPdf}
+                disabled={excelLogsLoading || !(detailViewMode === 'matrix' ? matrixRows.length : filteredExcelLogs.length)}
+                title={`Tải bảng chấm công tháng ${month} của ${companyName} dưới dạng PDF`}
+              >
+                Tải PDF
               </button>
               <button type="button" onClick={() => setIsExcelDetailOpen(false)}>Đóng</button>
             </div>
@@ -1040,6 +1155,7 @@ function AttendancePreview() {
                     <th rowSpan="2" className="col-stt">STT</th>
                     <th rowSpan="2" className="col-code">Mã nhân viên</th>
                     <th rowSpan="2" className="col-name">Họ và tên</th>
+                    <th rowSpan="2" className="col-company">Công ty</th>
                     <th rowSpan="2" className="col-pos">Chức vụ</th>
                     <th colSpan={monthDaysHeader.length} className="matrix-month-title">
                       Ngày trong tháng
@@ -1061,7 +1177,7 @@ function AttendancePreview() {
                 <tbody>
                   {matrixRows.length === 0 ? (
                     <tr>
-                      <td colSpan={monthDaysHeader.length + 5} className="empty">
+                      <td colSpan={monthDaysHeader.length + 6} className="empty">
                         Chưa có dữ liệu bảng công cho tháng {month}.
                       </td>
                     </tr>
@@ -1071,6 +1187,7 @@ function AttendancePreview() {
                         <td className="col-stt">{idx + 1}</td>
                         <td className="col-code font-bold">{emp.code || '-'}</td>
                         <td className="col-name font-semibold">{emp.name || '-'}</td>
+                        <td className="col-company">{companyName}</td>
                         <td className="col-pos">{emp.position || '-'}</td>
                         {monthDaysHeader.map(d => {
                           const val = emp.dailyMap[d.dayStr] || ''
@@ -1102,6 +1219,7 @@ function AttendancePreview() {
                       <th>STT</th>
                       <th>Mã NV</th>
                       <th>Họ tên</th>
+                      <th>Công ty</th>
                       <th>Tên máy CC</th>
                       <th>Phòng ban</th>
                       <th>Ngày</th>
@@ -1125,11 +1243,11 @@ function AttendancePreview() {
                   <tbody>
                     {excelLogsLoading ? (
                       <tr>
-                        <td colSpan="21" className="empty">Đang tải bảng chi tiết...</td>
+                        <td colSpan="22" className="empty">Đang tải bảng chi tiết...</td>
                       </tr>
                     ) : visibleExcelLogs.length === 0 ? (
                       <tr>
-                        <td colSpan="21" className="empty">
+                        <td colSpan="22" className="empty">
                           Chưa có dữ liệu Excel cho tháng này. Hãy dùng “Tải Excel & Lưu bảng công”.
                         </td>
                       </tr>
@@ -1146,6 +1264,7 @@ function AttendancePreview() {
                             <td>{excelPageStart + index}</td>
                             <td>{log.displayEmployeeCode || log.sourceEmployeeCode || log.employeeCode || '-'}</td>
                             <td>{log.employeeName || '-'}</td>
+                            <td>{companyName}</td>
                             <td>{log.machineName || log.tenTheoMayChamCong || '-'}</td>
                             <td>{log.department || log.phongBan || '-'}</td>
                             <td>
@@ -1157,7 +1276,7 @@ function AttendancePreview() {
                             <td>{formatTimeHM(log.vao || log.checkIn) || '-'}</td>
                             <td>{formatTimeHM(log.ra || log.checkOut) || '-'}</td>
                             <td>{log.cong ?? '-'}</td>
-                           <td>{hours ? hours.toFixed(2) : '-'}</td>
+                            <td>{hours ? hours.toFixed(2) : '-'}</td>
                             <td>{log.congPlus ?? '-'}</td>
                             <td className={late > 0 ? 'is-late' : ''}>{late > 0 ? `${late}p` : '-'}</td>
                             <td className={early > 0 ? 'is-early' : ''}>{early > 0 ? `${early}p` : '-'}</td>
@@ -1167,7 +1286,7 @@ function AttendancePreview() {
                             <td>{log.profileShift || log.shiftName || log.tenCa || '-'}</td>
                             <td>{log.kyHieu || log.status || '-'}</td>
                             <td>{log.kyHieuPlus || '-'}</td>
-                           <td><strong>{tongGio ? tongGio.toFixed(2) : '-'}</strong></td>
+                            <td><strong>{tongGio ? tongGio.toFixed(2) : '-'}</strong></td>
                           </tr>
                         )
                       })

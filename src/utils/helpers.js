@@ -150,8 +150,13 @@ export const getEmployeeEmploymentStatus = employee => {
 // Map Supabase DB columns (English) -> App State (Vietnamese)
 export const mapUserToApp = (user) => {
   if (!user) return null
+  const companyId = user.company_id ?? user.companyId ?? null
   return {
     id: user.id,
+    company_id: companyId,
+    companyId,
+    company_name: user.company_name || user.companyName || '',
+    companyName: user.companyName || user.company_name || '',
     employeeId: user.employee_id || '',
     ho_va_ten: user.name || '',
     email: user.email || '',
@@ -290,6 +295,9 @@ export const mapAppToUser = (data) => {
     images: Array.isArray(data.images) ? data.images : [],
     role: data.role || 'user',
     username: (data.username || data.employeeId || data.employee_id || '').trim() || null,
+    ...((data.company_id || data.companyId)
+      ? { company_id: data.company_id || data.companyId }
+      : {}),
   }
 }
 

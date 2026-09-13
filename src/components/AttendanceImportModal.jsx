@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import XLSX from 'xlsx-js-style'
 import { fbPush, fbUpdate } from '../services/firebase'
 import { supabase } from '../services/supabase'
+import { useAuth } from '../contexts/AuthContext'
 import {
   applyEmployeeToAttendanceLog,
   buildAttendanceRecordKey,
@@ -26,6 +27,7 @@ import {
   calculateAttendanceMetrics,
   STANDARD_WORK_MINUTES
 } from '../utils/attendanceCalculations'
+import { getCompanyIdForUser } from '../utils/companyContext'
 
 const { read, utils, writeFile } = XLSX
 
@@ -35,8 +37,12 @@ function AttendanceImportModal({
   attendanceSettings = {},
   isOpen,
   onClose,
-  onSave
+  onSave,
+  companyId,
+  companyName
 }) {
+  const { user } = useAuth()
+  const activeCompanyId = companyId || getCompanyIdForUser(user)
   const [file, setFile] = useState(null)
   const [referenceImage, setReferenceImage] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -1337,7 +1343,7 @@ function AttendanceImportModal({
           const chunk = changedLogs.slice(i, i + BATCH_SIZE)
           await Promise.all(
             chunk.map(log =>
-              fbUpdate(`hr/attendanceLogs/${log.id}`, sanitizeLog(log))
+              fbUpdate(`hr/attendanceLogs/${log.id}`, sanitizeLog(log), activeCompanyId)
             )
           )
           count += chunk.length
@@ -1390,21 +1396,20 @@ function AttendanceImportModal({
         for (let i = 0; i < logsToUpdate.length; i += BATCH_SIZE) {
           const chunk = logsToUpdate.slice(i, i + BATCH_SIZE)
           await Promise.all(
-            chunk.map(item => fbUpdate(`hr/attendanceLogs/${item.id}`, item.data))
+            chunk.map(item => fbUpdate(`hr/attendanceLogs/${item.id}`, item.data, activeCompanyId))
           )
         }
 
         for (let i = 0; i < logsToInsert.length; i += BATCH_SIZE) {
           const chunk = logsToInsert.slice(i, i + BATCH_SIZE)
           await Promise.all(
-            chunk.map(log => fbPush('hr/attendanceLogs', sanitizeLog(log)))
+            chunk.map(log => fbPush('hr/attendanceLogs', sanitizeLog(log), activeCompanyId))
           )
           count += chunk.length
         }
 
         // Lưu trực tiếp vào bảng cham_cong của Supabase và cập nhật nhan_su
         try {
-          const DEFAULT_COMPANY_ID = '00000000-0000-0000-0000-000000000001'
           const validLogs = previewData.logs.filter(
             log => !skippedSourceKeys.has(log._sourceEmployeeKey) && log.employeeId && !String(log.employeeId).startsWith('external:')
           )
@@ -1418,7 +1423,11 @@ function AttendanceImportModal({
               }
             })
             for (const [empId, pos] of updatedPositions.entries()) {
-              await supabase.from('nhan_su').update({ chuc_vu: pos }).eq('id', empId)
+              await supabase
+                .from('nhan_su')
+                .update({ chuc_vu: pos })
+                .eq('company_id', activeCompanyId)
+                .eq('id', empId)
             }
 
             // Ghi vào bảng cham_cong với đúng nhan_su_id
@@ -1426,7 +1435,7 @@ function AttendanceImportModal({
               const rawGiaTri = String(log.rawVal ?? log.kyHieu ?? log.hours ?? log.cong ?? '')
               const congVal = Number(log.cong ?? 0)
               return {
-                company_id: DEFAULT_COMPANY_ID,
+                company_id: activeCompanyId,
                 nhan_su_id: log.employeeId,
                 ngay: String(log.date || '').slice(0, 10),
                 gia_tri_goc: rawGiaTri || null,
@@ -1493,6 +1502,7 @@ function AttendanceImportModal({
       const group = groupByKey.get(log._sourceEmployeeKey)
       return {
         STT: index + 1,
+        'Công ty': companyName || 'Công ty chưa khai báo',
         'Mã nguồn': log.sourceEmployeeCode || '',
         'Tên nguồn': log.sourceEmployeeName || '',
         'Mã N.Viên Lumi': log.employeeCode || '',

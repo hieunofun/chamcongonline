@@ -32,6 +32,11 @@
   font-size: 13px;
 }
 
+.attendance-preview-page header p.attendance-company-context {
+  margin-bottom: 5px;
+  font-size: 14px;
+}
+
 .attendance-preview-actions {
   display: flex;
   flex-wrap: wrap;
@@ -133,6 +138,7 @@
 
 .attendance-excel-detail-tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   flex-shrink: 0;
@@ -167,6 +173,20 @@
 }
 
 .attendance-excel-download-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.attendance-excel-detail-tools .attendance-pdf-download-btn {
+  background: #2563eb;
+  border-color: transparent;
+}
+
+.attendance-excel-detail-tools .attendance-pdf-download-btn:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.attendance-excel-detail-tools .attendance-pdf-download-btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
@@ -901,6 +921,23 @@
 .attendance-matrix-table td.matrix-cell.is-off {
   color: #94a3b8;
   background: #f8fafc;
+}
+
+.attendance-matrix-table td.col-company {
+  min-width: 140px;
+  text-align: left;
+}
+
+@media (max-width: 760px) {
+  .attendance-excel-detail-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .attendance-excel-detail-tools input {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
 }
 
 .attendance-matrix-table td.matrix-cell.is-holiday {

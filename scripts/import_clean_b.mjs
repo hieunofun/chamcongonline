@@ -46,7 +46,7 @@ async function run() {
   })
   console.log('Số cột ngày phát hiện:', dateCols.length)
 
-  const DEFAULT_COMPANY_ID = '00000000-0000-0000-0000-000000000001'
+  const DEFAULT_COMPANY_ID = '00000000-0000-0000-0000-000000000022'
   const chamCongToInsert = []
   const hrLogsToInsert = []
 

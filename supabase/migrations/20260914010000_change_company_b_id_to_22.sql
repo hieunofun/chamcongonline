@@ -1,4 +1,4 @@
--- Đổi ID Công ty B từ UUID đại diện 1 sang UUID đại diện 22.
+-- Đổi ID Công ty 22 từ UUID đại diện 1 sang UUID đại diện 22.
 -- Script tự tìm mọi khóa ngoại trực tiếp tới public.companies(id),
 -- nên vẫn an toàn khi các bảng multi-company mới được bổ sung sau này.
 DO $$

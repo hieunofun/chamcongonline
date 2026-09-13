@@ -7,7 +7,7 @@ const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_A
 const supabase = createClient(url, key)
 
 async function run() {
-  console.log('=== BƯỚC 1: Xóa dữ liệu test cũ trên DATABASE MỚI (Company B: abghublsyvuyangkyibz) ===')
+  console.log('=== BƯỚC 1: Xóa dữ liệu test cũ của Công ty 22 ===')
   const { count: delCcCount, error: delCcErr } = await supabase
     .from('cham_cong')
     .delete({ count: 'exact' })

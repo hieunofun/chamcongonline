@@ -67,6 +67,6 @@ const wb = XLSX.utils.book_new()
 const ws = XLSX.utils.aoa_to_sheet(rows)
 XLSX.utils.book_append_sheet(wb, ws, 'BangCongThang8')
 
-const outputPath = path.resolve('d:/hr/HR-Company-B/Mau_Bang_Cong_Matrix_Thang_8_2026.xlsx')
+const outputPath = path.resolve('d:/hr/HR-Company-22/Mau_Bang_Cong_Matrix_Thang_8_2026.xlsx')
 XLSX.writeFile(wb, outputPath)
 console.log('Successfully created test excel matrix file at:', outputPath)

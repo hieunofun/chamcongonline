@@ -1,4 +1,4 @@
--- Ensure every existing user profile belongs to Company B (UUID 22) while
+-- Ensure every existing user profile belongs to Company 22 (UUID 22) while
 -- keeping the migration safe to run whether the additive multi-company
 -- migration has already added users.company_id or not.
 BEGIN;
@@ -55,7 +55,7 @@ BEGIN
     FROM public.companies
     WHERE id = '00000000-0000-0000-0000-000000000022'::UUID
   ) THEN
-    RAISE EXCEPTION 'Company B UUID 22 must exist before assigning users';
+    RAISE EXCEPTION 'Company 22 UUID must exist before assigning users';
   END IF;
 END
 $$;

@@ -1,8 +1,8 @@
 -- =============================================================================
--- CÔNG TY B (COMPANY B) — DỮ LIỆU DEMO GIẢ LẬP ĐỂ TEST
+-- CÔNG TY 22 (COMPANY 22) — DỮ LIỆU DEMO GIẢ LẬP ĐỂ TEST
 -- File này hoàn toàn KHÔNG sử dụng bất kỳ dữ liệu thật nào của Công ty A.
 -- Chỉ tạo 1 công ty mẫu và 8 nhân viên giả lập theo đúng mẫu Excel (Ảnh 2).
--- Chạy script này trên SQL Editor của Supabase Project MỚI (Company B).
+-- Chạy script này trên SQL Editor của Supabase Project MỚI (Company 22).
 -- =============================================================================
 
 DO $$
@@ -23,17 +23,17 @@ DECLARE
     v_nhan_su_ids UUID[] := ARRAY[v_nv1, v_nv2, v_nv3, v_nv4, v_nv5, v_nv6, v_nv7, v_nv8];
     v_id UUID;
 BEGIN
-    -- 1. TẠO CÔNG TY DEMO B
+    -- 1. TẠO CÔNG TY DEMO 22
     INSERT INTO public.companies (id, code, name, address, phone)
     VALUES (
         v_company_id,
-        'COMPANY_B',
-        'Công ty TNHH Demo B',
+        'COMPANY_22',
+        'Công ty TNHH Demo 22',
         'Tầng 5, Tòa nhà Innovation, Hà Nội',
         '0901234567'
     )
     ON CONFLICT (id) DO UPDATE 
-    SET name = EXCLUDED.name, updated_at = now();
+    SET code = EXCLUDED.code, name = EXCLUDED.name, updated_at = now();
 
     -- 2. TẠO 8 NHÂN SỰ DEMO (Khớp theo Ảnh 2)
     INSERT INTO public.nhan_su (id, company_id, ma_nhan_vien, ho_ten, chuc_vu, bo_phan, ca_lam, trang_thai)

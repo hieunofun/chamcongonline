@@ -331,16 +331,34 @@ function AttendancePreview() {
         const months = await loadSummaryIndex()
         if (cancelled) return
         const current = currentMonthValue()
-        const initialMonth = months.includes(current) ? current : (months[0] || current)
-        const [initialSnapshot, storedSettings] = await Promise.all([
-          fbGet(`hr/attendanceMonthSummaries/${initialMonth}`, companyId),
+        const snapshots = await Promise.all(
+          months.map(value => fbGet(`hr/attendanceMonthSummaries/${value}`, companyId))
+        )
+        const currentIndex = months.indexOf(current)
+        const currentSnapshot = currentIndex >= 0 ? snapshots[currentIndex] : null
+        const nonEmptyIndex = snapshots.findIndex(snapshot =>
+          Number(snapshot?.sourceLogCount || 0) > 0 ||
+          (snapshot?.rows || []).some(row => Number(row?.workdays || 0) > 0)
+        )
+        const initialIndex = currentSnapshot && (
+          Number(currentSnapshot.sourceLogCount || 0) > 0 ||
+          (currentSnapshot.rows || []).some(row => Number(row?.workdays || 0) > 0)
+        )
+          ? currentIndex
+          : (nonEmptyIndex >= 0 ? nonEmptyIndex : (currentIndex >= 0 ? currentIndex : 0))
+        const initialMonth = months[initialIndex] || current
+        const initialSnapshot = snapshots[initialIndex] || null
+        const [resolvedSnapshot, storedSettings] = await Promise.all([
+          initialSnapshot
+            ? Promise.resolve(initialSnapshot)
+            : fbGet(`hr/attendanceMonthSummaries/${initialMonth}`, companyId),
           fbGet('hr/attendanceSettings/default', companyId),
           loadConfirmations(initialMonth)
         ])
         if (cancelled) return
         setAttendanceSettings(normalizeAttendanceShiftSettings(storedSettings))
         setMonth(initialMonth)
-        applySnapshot(initialSnapshot, initialMonth)
+        applySnapshot(resolvedSnapshot, initialMonth)
         setLoadedCompanyId(companyId)
       } catch (requestError) {
         console.error('Không tải được danh sách bảng công:', requestError)

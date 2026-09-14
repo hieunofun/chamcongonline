@@ -504,8 +504,8 @@ function AttendancePreview() {
     }
 
     const headers = [
-      'STT', 'Họ tên', 'Công ty', 'Bộ phận', 'Ca làm', 'Notes',
-      'Tăng ca', 'Phép sử dụng', 'Công làm lễ', 'Công lễ', 'Tổng công'
+      'STT', 'Họ tên', 'Công ty', 'Bộ phận', 'Ca làm', 'Tổng công',
+      'Notes', 'Tăng ca', 'Phép sử dụng', 'Công làm lễ', 'Công lễ'
     ]
     const reportRows = rows.map((row, index) => [
       index + 1,
@@ -513,12 +513,12 @@ function AttendancePreview() {
       companyName,
       row.displayDepartment || row.department || '-',
       row.shift || '-',
+      row.workdays != null && row.workdays !== '' ? Number(row.workdays).toFixed(2) : '0.00',
       row.notes || '-',
       row.overtimeHours ?? '-',
       row.paidLeaveWorkdays ?? '-',
       row.congLamLe ?? row.holidayWorkdays ?? '-',
-      row.congLe ?? '-',
-      row.workdays != null && row.workdays !== '' ? Number(row.workdays).toFixed(2) : '0.00'
+      row.congLe ?? '-'
     ])
 
     openAttendancePrintWindow({
@@ -916,12 +916,12 @@ function AttendancePreview() {
               <th>Công ty</th>
               <th>Bộ phận</th>
               <th>Ca làm</th>
+              <th>Tổng công</th>
               <th>Notes</th>
               <th>Tăng ca</th>
               <th>Phép sử dụng</th>
               <th>Công làm lễ</th>
               <th>Công lễ</th>
-              <th>Tổng công</th>
             </tr>
           </thead>
           <tbody>
@@ -950,12 +950,12 @@ function AttendancePreview() {
                   <td rowSpan={departmentRowSpans[index]}>{row.displayDepartment}</td>
                 )}
                 <td>{row.shift}</td>
+                <td>{row.workdays != null && row.workdays !== '' ? Number(row.workdays).toFixed(2) : ''}</td>
                 <td>{row.notes || ''}</td>
                 <td>{row.overtimeHours || ''}</td>
                 <td>{row.paidLeaveWorkdays || ''}</td>
                 <td></td>
                 <td></td>
-                <td>{row.workdays != null && row.workdays !== '' ? Number(row.workdays).toFixed(2) : ''}</td>
               </tr>
             ))}
           </tbody>

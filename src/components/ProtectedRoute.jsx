@@ -1,16 +1,19 @@
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { getDefaultLandingPath, isAccountingUser } from '../utils/staffAccess'
 import LoadingSpinner from './LoadingSpinner'
 
-function ProtectedRoute({ allowedRoles, children }) {
+function ProtectedRoute({ allowedRoles, allowAccounting = false, children }) {
   const { user, loading } = useAuth()
   const location = useLocation()
   if (loading) return <LoadingSpinner />
   if (!user) {
-    return <Navigate to={allowedRoles ? '/login' : '/employee-login'} state={{ from: location }} replace />
+    return <Navigate to={allowedRoles || allowAccounting ? '/login' : '/employee-login'} state={{ from: location }} replace />
   }
-  if (allowedRoles && !allowedRoles.includes(user.role)) {
-    return <Navigate to={user.role === 'user' ? '/bang-cong' : '/employees'} replace />
+  const roleAllowed = !allowedRoles || allowedRoles.includes(user.role)
+  const accountingAllowed = allowAccounting && isAccountingUser(user)
+  if (!roleAllowed && !accountingAllowed) {
+    return <Navigate to={getDefaultLandingPath(user)} replace />
   }
   return children || <Outlet />
 }

@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { isAccountingUser, isCoreStaffUser } from '../utils/staffAccess'
 
 function Sidebar() {
   const location = useLocation()
@@ -9,7 +10,8 @@ function Sidebar() {
     { path: '/employees', icon: 'fas fa-users', label: 'Hồ sơ nhân sự' },
     { path: '/cham-cong-online', icon: 'fas fa-camera', label: 'Chấm công online' },
     { path: '/bang-phat', icon: 'fas fa-file-invoice-dollar', label: 'Bảng phạt' },
-    { path: '/bang-cong-preview', icon: 'fas fa-calendar-check', label: 'Bảng Công' }
+    { path: '/bang-cong-preview', icon: 'fas fa-calendar-check', label: 'Bảng Công' },
+    { path: '/holiday-settings', icon: 'fas fa-calendar-day', label: 'Cài đặt ngày lễ' }
   ]
 
   const secondaryStaffItems = [
@@ -26,6 +28,14 @@ function Sidebar() {
     { path: '/bang-cong', icon: 'fas fa-calendar-check', label: 'Bảng công' },
     { path: '/cham-cong-online', icon: 'fas fa-camera', label: 'Chấm công online' }
   ]
+
+  const accountingItems = [
+    { path: '/bang-cong-preview', icon: 'fas fa-calendar-check', label: 'Bảng Công' },
+    { path: '/holiday-settings', icon: 'fas fa-calendar-day', label: 'Cài đặt ngày lễ' },
+    { path: '/cham-cong-online', icon: 'fas fa-camera', label: 'Chấm công online' }
+  ]
+
+  const accountingOnly = isAccountingUser(user) && !isCoreStaffUser(user)
 
   const isActive = (path) =>
     location.pathname === path || location.pathname.startsWith(`${path}/`)
@@ -49,7 +59,9 @@ function Sidebar() {
         <span>SpeeGo HR</span>
       </div>
 
-      {user?.role === 'user' ? (
+      {accountingOnly ? (
+        renderItems(accountingItems)
+      ) : user?.role === 'user' ? (
         renderItems(employeeItems)
       ) : (
         <>

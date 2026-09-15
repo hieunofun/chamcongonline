@@ -700,6 +700,8 @@ function EmployeeModal({
                             ? 'Nhân sự (HR)'
                             : formData.role === 'manager'
                               ? 'Quản lý'
+                              : formData.role === 'accountant'
+                                ? 'Kế toán'
                               : 'Nhân viên'}
                       </p>
                     </div>
@@ -788,6 +790,7 @@ function EmployeeModal({
                       <option value="user">Nhân viên</option>
                       <option value="hr">Nhân sự (HR)</option>
                       <option value="manager">Quản lý</option>
+                      <option value="accountant">Kế toán</option>
                       <option value="admin">Quản trị viên</option>
                     </select>
                   </div>

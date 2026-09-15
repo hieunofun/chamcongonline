@@ -1,9 +1,8 @@
 import { useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { isAccountingUser, isCoreStaffUser } from '../utils/staffAccess'
 import './Login.css'
-
-const STAFF_ROLES = ['admin', 'hr', 'manager']
 
 function Login() {
   const [email, setEmail] = useState('')
@@ -24,11 +23,18 @@ function Login() {
       const cleanEmail = email.trim()
       const cleanPassword = password.trim()
       const profile = await login(cleanEmail, cleanPassword)
+      if (isAccountingUser(profile) && !isCoreStaffUser(profile)) {
+        const target = ['/bang-cong-preview', '/holiday-settings', '/cham-cong-online'].includes(from)
+          ? from
+          : '/bang-cong-preview'
+        navigate(target, { replace: true })
+        return
+      }
       if (profile?.role === 'user') {
         navigate('/bang-cong', { replace: true })
         return
       }
-      if (STAFF_ROLES.includes(profile?.role)) {
+      if (isCoreStaffUser(profile)) {
         const target = ['/', '/bang-cong', '/cham-cong-online'].includes(from) ? '/employees' : from
         navigate(target, { replace: true })
         return

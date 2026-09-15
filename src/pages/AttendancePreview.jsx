@@ -15,6 +15,8 @@ import {
   resolveAttendanceShift
 } from '../utils/attendanceShift'
 import { getCompanyIdForUser, getCompanyNameForContext } from '../utils/companyContext'
+import { parseManualWorkdayInput, updateManualWorkdays } from '../utils/attendanceManual'
+import { canManageAttendance } from '../utils/staffAccess'
 import { openAttendancePrintWindow } from '../utils/attendancePdf'
 import './AttendancePreview.css'
 
@@ -33,6 +35,50 @@ const ensureXlsx = async () => {
     XLSX = mod.default || mod
   }
   return XLSX
+}
+
+function ManualWorkdayInput({ value, isManual, disabled, onSave, employeeName, date }) {
+  const normalizedValue = value === null || value === undefined ? '' : String(value)
+  const [draft, setDraft] = useState(normalizedValue)
+
+  useEffect(() => {
+    setDraft(normalizedValue)
+  }, [normalizedValue])
+
+  const commit = () => {
+    if (draft === normalizedValue) return
+    const parsed = parseManualWorkdayInput(draft)
+    if (!parsed.valid) {
+      alert(parsed.error)
+      setDraft(normalizedValue)
+      return
+    }
+    onSave(draft)
+  }
+
+  return (
+    <input
+      type="number"
+      min="0"
+      max="1"
+      step="0.25"
+      inputMode="decimal"
+      className={`manual-workday-input ${isManual ? 'is-manual' : ''}`}
+      value={draft}
+      disabled={disabled}
+      onChange={event => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={event => {
+        if (event.key === 'Enter') event.currentTarget.blur()
+        if (event.key === 'Escape') {
+          setDraft(normalizedValue)
+          event.currentTarget.blur()
+        }
+      }}
+      aria-label={`Chỉnh công ${employeeName || ''} ngày ${date}`}
+      title={isManual ? 'Đã chỉnh tay. Xóa giá trị để trở về tự động.' : 'Nhập 0–1 để chỉnh tay số công.'}
+    />
+  )
 }
 
 const enrichExcelLog = (log, employeesById) => {
@@ -176,6 +222,9 @@ function AttendancePreview() {
   const [importEmployees, setImportEmployees] = useState([])
   const [importLogs, setImportLogs] = useState([])
   const [attendanceSettings, setAttendanceSettings] = useState(() => normalizeAttendanceShiftSettings())
+  const [manualWorkdays, setManualWorkdays] = useState({})
+  const [manualSavingKey, setManualSavingKey] = useState('')
+  const [manualNotice, setManualNotice] = useState('')
   const [confirmations, setConfirmations] = useState({})
   const [confirmSaving, setConfirmSaving] = useState(false)
   const [detailRow, setDetailRow] = useState(null)
@@ -186,6 +235,7 @@ function AttendancePreview() {
   const [excelPage, setExcelPage] = useState(1)
   const [excelPageSize, setExcelPageSize] = useState(EXCEL_DETAIL_PAGE_SIZE)
   const [detailViewMode, setDetailViewMode] = useState('matrix')
+  const canEditWorkdays = canManageAttendance(user)
 
   useEffect(() => {
     let active = true
@@ -304,18 +354,21 @@ function AttendancePreview() {
     setLoading(true)
     setError('')
     try {
-      const [snapshot, storedSettings] = await Promise.all([
+      const [snapshot, storedSettings, storedManuals] = await Promise.all([
         fbGet(`hr/attendanceMonthSummaries/${targetMonth}`, companyId),
         fbGet('hr/attendanceSettings/default', companyId),
+        fbGet(`hr/manualWorkdays/${targetMonth}`, companyId),
         loadConfirmations(targetMonth)
       ])
       setAttendanceSettings(normalizeAttendanceShiftSettings(storedSettings))
+      setManualWorkdays(storedManuals || {})
       applySnapshot(snapshot, targetMonth)
     } catch (requestError) {
       console.error('Không tải được bảng công đã tổng hợp:', requestError)
       setError('Không thể tải bảng công đã tổng hợp.')
       applySnapshot(null, targetMonth)
       setConfirmations({})
+      setManualWorkdays({})
     } finally {
       setLoading(false)
     }
@@ -348,15 +401,17 @@ function AttendancePreview() {
           : (nonEmptyIndex >= 0 ? nonEmptyIndex : (currentIndex >= 0 ? currentIndex : 0))
         const initialMonth = months[initialIndex] || current
         const initialSnapshot = snapshots[initialIndex] || null
-        const [resolvedSnapshot, storedSettings] = await Promise.all([
+        const [resolvedSnapshot, storedSettings, storedManuals] = await Promise.all([
           initialSnapshot
             ? Promise.resolve(initialSnapshot)
             : fbGet(`hr/attendanceMonthSummaries/${initialMonth}`, companyId),
           fbGet('hr/attendanceSettings/default', companyId),
+          fbGet(`hr/manualWorkdays/${initialMonth}`, companyId),
           loadConfirmations(initialMonth)
         ])
         if (cancelled) return
         setAttendanceSettings(normalizeAttendanceShiftSettings(storedSettings))
+        setManualWorkdays(storedManuals || {})
         setMonth(initialMonth)
         applySnapshot(resolvedSnapshot, initialMonth)
         setLoadedCompanyId(companyId)
@@ -365,6 +420,7 @@ function AttendancePreview() {
         if (!cancelled) {
           setError('Không thể tải dữ liệu bảng công.')
           setLoadedCompanyId(companyId)
+          setManualWorkdays({})
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -375,6 +431,7 @@ function AttendancePreview() {
 
   const handleMonthChange = async (nextMonth) => {
     setMonth(nextMonth)
+    setManualNotice('')
     await loadMonthSnapshot(nextMonth)
   }
 
@@ -585,6 +642,7 @@ function AttendancePreview() {
     ])
     const nextAttendanceSettings = normalizeAttendanceShiftSettings(storedSettings)
     setAttendanceSettings(nextAttendanceSettings)
+    setManualWorkdays(nextManuals || {})
     const employeeList = employeeData
       ? Object.entries(employeeData).map(([id, value]) => ({ ...value, id }))
       : []
@@ -622,6 +680,51 @@ function AttendancePreview() {
     }
     return snapshot
   }, [applySnapshot, companyId, companyName])
+
+  const handleSaveManualWorkday = async (employeeId, day, rawValue) => {
+    const parsed = parseManualWorkdayInput(rawValue)
+    if (!parsed.valid) {
+      alert(parsed.error)
+      return
+    }
+
+    const employeeKey = String(employeeId)
+    const savingKey = `${employeeKey}:${day}`
+    const previous = manualWorkdays
+    const next = updateManualWorkdays(previous, employeeKey, day, parsed.value)
+    setManualWorkdays(next)
+    setManualSavingKey(savingKey)
+    setManualNotice('')
+    let persisted = false
+
+    try {
+      await fbSet(
+        `hr/manualWorkdays/${month}/${employeeKey}`,
+        next[employeeKey] || {},
+        companyId
+      )
+      persisted = true
+      const snapshot = await saveMonthSummary(month, { silent: true })
+      const refreshedRows = groupRowsByDepartment(hydrateAttendanceSummaryRows(snapshot.rows || []))
+      const refreshedDetail = refreshedRows.find(row => String(row.employeeId) === employeeKey)
+      if (refreshedDetail) setDetailRow(refreshedDetail)
+      setManualNotice(
+        parsed.value === null
+          ? 'Đã bỏ chỉnh tay và khôi phục số công tự động.'
+          : `Đã lưu ${parsed.value} công cho ngày ${String(day).padStart(2, '0')}/${month}.`
+      )
+    } catch (requestError) {
+      console.error('Không lưu được số công chỉnh tay:', requestError)
+      if (!persisted) setManualWorkdays(previous)
+      alert(
+        persisted
+          ? 'Đã lưu số công nhưng chưa tổng hợp lại được bảng: ' + (requestError.message || requestError)
+          : 'Không lưu được số công: ' + (requestError.message || requestError)
+      )
+    } finally {
+      setManualSavingKey('')
+    }
+  }
 
   const handleImportComplete = async (importedMonth = '') => {
     setIsImportOpen(false)
@@ -797,7 +900,8 @@ function AttendancePreview() {
         date,
         weekday: weekdayText(month, day),
         code: dayCode(dayData),
-        workdays: dayData?.workdays || '',
+        workdays: dayData?.workdays ?? '',
+        manualWorkday: manualWorkdays[String(detailRow.employeeId)]?.[String(day)],
         hours: dayData?.hours || '',
         overtimeHours: dayData?.overtimeHours || '',
         checkIn,
@@ -808,7 +912,7 @@ function AttendancePreview() {
         hasData: Boolean(dayData)
       }
     })
-  }, [attendanceSettings, detailRow, month])
+  }, [attendanceSettings, detailRow, manualWorkdays, month])
   const detailStandardLabel = useMemo(() => {
     if (!detailDays.length) return ''
     const sample = detailDays.find(item => item.standardCheckIn && item.standardCheckOut) || detailDays[0]
@@ -950,7 +1054,14 @@ function AttendancePreview() {
                   <td rowSpan={departmentRowSpans[index]}>{row.displayDepartment}</td>
                 )}
                 <td>{row.shift}</td>
-                <td>{row.workdays != null && row.workdays !== '' ? Number(row.workdays).toFixed(2) : ''}</td>
+                <td
+                  className={canEditWorkdays ? 'is-clickable workdays-total' : ''}
+                  onClick={() => canEditWorkdays && setDetailRow(row)}
+                  title={canEditWorkdays ? 'Mở chi tiết để chỉnh tay số công từng ngày' : undefined}
+                >
+                  {row.workdays != null && row.workdays !== '' ? Number(row.workdays).toFixed(2) : ''}
+                  {canEditWorkdays && <i className="fas fa-pen" aria-hidden="true"></i>}
+                </td>
                 <td>{row.notes || ''}</td>
                 <td>{row.overtimeHours || ''}</td>
                 <td>{row.paidLeaveWorkdays || ''}</td>
@@ -1041,6 +1152,12 @@ function AttendancePreview() {
               <span className="is-standard">Giờ tiêu chuẩn: <strong>{detailStandardLabel}</strong></span>
             )}
           </div>
+          {canEditWorkdays && (
+            <div className="manual-workday-help">
+              <strong>Kế toán/HR chỉnh công:</strong> nhập từ 0 đến 1 tại cột Công. Xóa ô rồi rời khỏi ô để dùng lại kết quả tự động.
+              {manualNotice && <span>{manualNotice}</span>}
+            </div>
+          )}
           <div className="attendance-day-detail-scroll">
             <table>
               <thead>
@@ -1074,7 +1191,18 @@ function AttendancePreview() {
                         ? `${item.standardCheckIn} - ${item.standardCheckOut}`
                         : '—'}
                     </td>
-                    <td>{item.workdays || '—'}</td>
+                    <td className={item.manualWorkday !== undefined ? 'manual-workday-cell is-manual' : 'manual-workday-cell'}>
+                      {canEditWorkdays ? (
+                        <ManualWorkdayInput
+                          value={item.manualWorkday !== undefined ? item.manualWorkday : item.workdays}
+                          isManual={item.manualWorkday !== undefined}
+                          disabled={manualSavingKey === `${String(detailRow.employeeId)}:${item.day}`}
+                          employeeName={detailRow.employeeName}
+                          date={item.date}
+                          onSave={value => handleSaveManualWorkday(detailRow.employeeId, item.day, value)}
+                        />
+                      ) : (item.workdays !== '' ? item.workdays : '—')}
+                    </td>
                     <td>{item.hours || '—'}</td>
                     <td>{item.overtimeHours || '—'}</td>
                     <td className="note">{item.notes || '—'}</td>

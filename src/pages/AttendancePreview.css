@@ -967,3 +967,62 @@
   font-weight: 700;
 }
 
+.workdays-total {
+  white-space: nowrap;
+}
+
+.workdays-total i {
+  margin-left: 7px;
+  color: #2563eb;
+  font-size: 11px;
+}
+
+.manual-workday-help {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  color: #1e3a8a;
+  background: #eff6ff;
+  font-size: 13px;
+}
+
+.manual-workday-help span {
+  color: #166534;
+  font-weight: 600;
+}
+
+.manual-workday-cell {
+  min-width: 76px;
+}
+
+.manual-workday-cell.is-manual {
+  background: #fef3c7;
+}
+
+.manual-workday-input {
+  width: 62px;
+  min-height: 30px;
+  padding: 4px 6px;
+  border: 1px solid #93c5fd;
+  border-radius: 6px;
+  text-align: center;
+  color: #1e3a8a;
+  background: #fff;
+  font-weight: 700;
+}
+
+.manual-workday-input.is-manual {
+  border-color: #f59e0b;
+  color: #92400e;
+  background: #fffbeb;
+}
+
+.manual-workday-input:disabled {
+  cursor: wait;
+  opacity: .65;
+}
+
